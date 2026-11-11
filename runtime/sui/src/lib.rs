@@ -25,3 +25,11 @@ mod tx;
 
 /// A 32-byte Sui address, as laid out in memory by generated code.
 pub type Address = [u8; 32];
+
+/// Locations (canonical module ids) of framework modules whose natives can abort.
+pub(crate) mod location {
+    pub const DYNAMIC_FIELD: &str =
+        "0000000000000000000000000000000000000000000000000000000000000002::dynamic_field";
+    pub const TEST_SCENARIO: &str =
+        "0000000000000000000000000000000000000000000000000000000000000002::test_scenario";
+}

@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use move_binary_format::CompiledModule;
+use move_binary_format::errors::Location;
 use move_compiler::{
     Compiler, Flags,
     command_line::compiler::PASS_CFGIR,
@@ -68,13 +69,15 @@ pub struct UnitTest {
 }
 
 /// Expected outcome of a unit test (from `#[expected_failure(...)]`).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum Expected {
     Success,
-    /// A Move `abort`, optionally with a specific code.
-    Abort(Option<u64>),
-    /// A VM error with this status code (e.g. `arithmetic_error` = 4017).
-    VmError(u64),
+    /// A Move `abort`, optionally with a specific code, optionally in a specific module
+    /// (canonical id `<64 hex address>::<module>`).
+    Abort(Option<u64>, Option<String>),
+    /// A VM error with this status code (e.g. `arithmetic_error` = 4017), optionally in a
+    /// specific module.
+    VmError(u64, Option<String>),
 }
 
 /// Compile `packages` (root first) together with the embedded frameworks. `test_mode`
@@ -217,20 +220,30 @@ pub fn compile(
 }
 
 fn expected_outcome(f: Option<&ExpectedFailure>) -> Expected {
-    let code = |e: &MoveErrorType| match e {
-        MoveErrorType::Code(c) => Expected::Abort(Some(*c)),
-        // named error constants (`abort_code = module::EName`): any abort is accepted
-        MoveErrorType::ConstantName(_) => Expected::Abort(None),
+    let code = |e: &MoveErrorType, loc: Option<String>| match e {
+        MoveErrorType::Code(c) => Expected::Abort(Some(*c), loc),
+        // named error constants (`abort_code = module::EName`) that did not resolve to a
+        // number: any abort code is accepted
+        MoveErrorType::ConstantName(_) => Expected::Abort(None, loc),
     };
     match f {
         None => Expected::Success,
-        Some(ExpectedFailure::Expected) => Expected::Abort(None),
-        Some(ExpectedFailure::ExpectedWithCodeDEPRECATED(e)) => code(e),
-        Some(ExpectedFailure::ExpectedWithError(ExpectedMoveError(status, sub, _))) => {
+        Some(ExpectedFailure::Expected) => Expected::Abort(None, None),
+        Some(ExpectedFailure::ExpectedWithCodeDEPRECATED(e)) => code(e, None),
+        Some(ExpectedFailure::ExpectedWithError(ExpectedMoveError(status, sub, location))) => {
+            let loc = match location {
+                Location::Module(id) => Some(format!(
+                    "{}::{}",
+                    id.address().to_canonical_string(false),
+                    id.name()
+                )),
+                // package-level or unspecified: the location is not checked
+                Location::Package(_) | Location::Undefined => None,
+            };
             match (status, sub) {
-                (StatusCode::ABORTED, Some(e)) => code(e),
-                (StatusCode::ABORTED, None) => Expected::Abort(None),
-                (status, _) => Expected::VmError(*status as u64),
+                (StatusCode::ABORTED, Some(e)) => code(e, loc),
+                (StatusCode::ABORTED, None) => Expected::Abort(None, loc),
+                (status, _) => Expected::VmError(*status as u64, loc),
             }
         }
     }

@@ -39,7 +39,7 @@ mod types;
 mod value;
 mod vector;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 
 use anyhow::{Result, anyhow, ensure};
@@ -90,6 +90,8 @@ pub struct Translator<'ctx, 'p> {
     /// Target layout (sizes/alignments for enum payloads).
     target_data: TargetData,
     options: Options,
+    /// Module of the function being translated (abort locations).
+    current_module: Cell<Option<program::ModuleIdx>>,
 }
 
 impl<'ctx, 'p> Translator<'ctx, 'p> {
@@ -111,6 +113,7 @@ impl<'ctx, 'p> Translator<'ctx, 'p> {
             struct_types: RefCell::default(),
             target_data,
             options,
+            current_module: Cell::new(None),
         }
     }
 

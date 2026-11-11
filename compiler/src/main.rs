@@ -217,10 +217,12 @@ fn test(input: &Input, out: &Path, filter: Option<&str>) -> Result<()> {
         .iter()
         .filter(|t| filter.is_none_or(|f| t.name.contains(f)))
     {
-        let expected = match t.expected {
+        let expected = match &t.expected {
             Expected::Success => json!("success"),
-            Expected::Abort(code) => json!({ "abort": code }),
-            Expected::VmError(status) => json!({ "vm_error": status }),
+            Expected::Abort(code, location) => json!({ "abort": code, "location": location }),
+            Expected::VmError(status, location) => {
+                json!({ "vm_error": status, "location": location })
+            }
         };
         let elf_name = format!("{}.elf", t.name.replace("::", "__"));
         match build_elf(&compiled, &t.name, input, None) {

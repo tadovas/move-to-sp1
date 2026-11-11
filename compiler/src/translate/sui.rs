@@ -318,7 +318,7 @@ impl<'ctx> Translator<'ctx, '_> {
                     .append_basic_block(self.current_function(), "bad_address");
                 self.builder.build_conditional_branch(bad, abort, ok)?;
                 self.builder.position_at_end(abort);
-                self.abort(i64t.const_zero())?;
+                self.abort_in(i64t.const_zero(), f.id.module)?; // in `sui::address`
                 self.builder.position_at_end(ok);
                 let a = self.builder.build_load(self.int_type(256), data, "")?;
                 fr.push(a, Type::Address);

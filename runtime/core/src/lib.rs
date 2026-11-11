@@ -76,35 +76,70 @@ pub unsafe extern "C" fn move_rt_commit_value(d: &TypeDesc, p: *const u8) {
 }
 
 /// Failure record committed to the public values when the program aborts, so runners (and
-/// proofs) can tell how it failed: `"MOVEABRT" || kind (0 = abort, 1 = VM error) || code (u64 LE)`.
+/// proofs) can tell how and where it failed:
+/// `"MOVEABRT" || kind (0 = abort, 1 = VM error) || code (u64 LE) || len (u64 LE) || location`,
+/// where `location` is the canonical id of the aborting module (`<64 hex address>::<module>`).
 pub const ABORT_MAGIC: &[u8; 8] = b"MOVEABRT";
 
-fn fail(kind: u8, code: u64, message: core::fmt::Arguments) -> ! {
+fn fail(kind: u8, code: u64, location: &[u8], message: core::fmt::Arguments) -> ! {
     let text = alloc::format!("{message}\n");
     sp1_zkvm::syscalls::syscall_write(2, text.as_ptr(), text.len());
     let mut record = ABORT_MAGIC.to_vec();
     record.push(kind);
     record.extend_from_slice(&code.to_le_bytes());
+    record.extend_from_slice(&(location.len() as u64).to_le_bytes());
+    record.extend_from_slice(location);
     sp1_zkvm::io::commit_slice(&record);
     sp1_zkvm::syscalls::syscall_halt(1)
 }
 
-/// Move `abort <code>`.
-#[unsafe(no_mangle)]
-pub extern "C" fn move_rt_abort(code: u64) -> ! {
-    fail(0, code, format_args!("Move abort with code {code}"))
+/// `abort code` raised by runtime code implementing a native of module `location`.
+pub fn abort_in(location: &str, code: u64) -> ! {
+    fail(
+        0,
+        code,
+        location.as_bytes(),
+        format_args!("Move abort with code {code} in {location}"),
+    )
 }
 
-/// VM-level failure, with a Move VM status code (`ARITHMETIC_ERROR`, ...).
+/// Location bytes passed by generated code (a constant module id).
+fn location<'a>(p: *const u8, len: u64) -> &'a [u8] {
+    // SAFETY: generated code passes a pointer to a constant of `len` bytes.
+    unsafe { core::slice::from_raw_parts(p, len as usize) }
+}
+
+/// Move `abort <code>` in the module identified by `loc`/`loc_len`.
 #[unsafe(no_mangle)]
-pub extern "C" fn move_rt_vm_error(status: u64) -> ! {
+pub extern "C" fn move_rt_abort(code: u64, loc: *const u8, loc_len: u64) -> ! {
+    let loc = location(loc, loc_len);
+    let name = core::str::from_utf8(loc).unwrap_or("?");
+    fail(
+        0,
+        code,
+        loc,
+        format_args!("Move abort with code {code} in {name}"),
+    )
+}
+
+/// VM-level failure, with a Move VM status code (`ARITHMETIC_ERROR`, ...), in the module
+/// identified by `loc`/`loc_len`.
+#[unsafe(no_mangle)]
+pub extern "C" fn move_rt_vm_error(status: u64, loc: *const u8, loc_len: u64) -> ! {
     let name = match status {
         4017 => "ARITHMETIC_ERROR",
         4018 => "VECTOR_OPERATION_ERROR",
         4030 => "VARIANT_TAG_MISMATCH",
         _ => "VM_ERROR",
     };
-    fail(1, status, format_args!("Move VM error {name} ({status})"))
+    let loc = location(loc, loc_len);
+    let module = core::str::from_utf8(loc).unwrap_or("?");
+    fail(
+        1,
+        status,
+        loc,
+        format_args!("Move VM error {name} ({status}) in {module}"),
+    )
 }
 
 /// Heap memory for generated code (16-byte aligned, never freed).

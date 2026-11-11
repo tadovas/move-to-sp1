@@ -67,10 +67,10 @@ async fn main() -> Result<()> {
 enum Outcome {
     /// Halted normally; the public values hold the results (and effects).
     Success(Vec<u8>),
-    /// Move `abort` with this code.
-    Abort(u64),
-    /// Move VM error with this status code (e.g. 4017 ARITHMETIC_ERROR).
-    VmError(u64),
+    /// Move `abort` with this code, in this module (canonical id).
+    Abort(u64, String),
+    /// Move VM error with this status code (e.g. 4017 ARITHMETIC_ERROR), in this module.
+    VmError(u64, String),
     /// Any other failure (exit code).
     Failed(u64),
 }
@@ -85,17 +85,23 @@ async fn execute(client: &LightProver, elf: &[u8], stdin: SP1Stdin) -> Result<(O
         .await
         .map_err(|e| anyhow!("execution failed: {e}"))?;
     let pv = public_values.to_vec();
-    let outcome = match (report.exit_code, pv.strip_prefix(ABORT_MAGIC.as_slice())) {
+    // failure record: kind (u8) || code (u64 LE) || len (u64 LE) || location
+    let failure = |r: &[u8]| -> Option<(u8, u64, String)> {
+        let (&kind, r) = r.split_first()?;
+        let code = u64::from_le_bytes(r.get(..8)?.try_into().ok()?);
+        let len = u64::from_le_bytes(r.get(8..16)?.try_into().ok()?) as usize;
+        Some((
+            kind,
+            code,
+            String::from_utf8_lossy(r.get(16..16 + len)?).into_owned(),
+        ))
+    };
+    let record = pv.strip_prefix(ABORT_MAGIC.as_slice()).and_then(failure);
+    let outcome = match (report.exit_code, record) {
         (0, _) => Outcome::Success(pv),
-        (_, Some([kind, code @ ..])) if code.len() == 8 => {
-            let code = u64::from_le_bytes(code.try_into().unwrap());
-            if *kind == 0 {
-                Outcome::Abort(code)
-            } else {
-                Outcome::VmError(code)
-            }
-        }
-        (exit, _) => Outcome::Failed(exit),
+        (_, Some((0, code, loc))) => Outcome::Abort(code, loc),
+        (_, Some((_, status, loc))) => Outcome::VmError(status, loc),
+        (exit, None) => Outcome::Failed(exit),
     };
     Ok((outcome, report.total_instruction_count()))
 }
@@ -128,11 +134,16 @@ async fn run(elf: PathBuf, args: Vec<String>, compact: bool) -> Result<()> {
     let elapsed = t.elapsed();
     let public_values = match outcome {
         Outcome::Success(pv) => pv,
-        Outcome::Abort(code) => bail!("{} aborted with code {code} ({cycles} cycles)", abi.entry),
-        Outcome::VmError(status) => bail!(
-            "{} failed with VM error {status} ({cycles} cycles)",
+        Outcome::Abort(code, loc) => bail!(
+            "{} aborted with code {code} in {loc} ({cycles} cycles)",
             abi.entry
         ),
+        Outcome::VmError(status, loc) => {
+            bail!(
+                "{} failed with VM error {status} in {loc} ({cycles} cycles)",
+                abi.entry
+            )
+        }
         Outcome::Failed(exit) => bail!("program exited with code {exit}"),
     };
 
@@ -191,17 +202,19 @@ async fn test(dir: PathBuf) -> Result<()> {
         total_cycles += cycles;
         let (ok, got) = match &outcome {
             Outcome::Success(_) => (expected == "success", "success".to_string()),
-            // `{"abort": null}` accepts any abort code
-            Outcome::Abort(code) => {
+            // `"abort": null` accepts any code, `"location": null` any module
+            Outcome::Abort(code, loc) => {
                 let ok = expected
                     .get("abort")
-                    .is_some_and(|want| want.is_null() || want.as_u64() == Some(*code));
-                (ok, format!("abort {code}"))
+                    .is_some_and(|want| want.is_null() || want.as_u64() == Some(*code))
+                    && location_ok(&expected["location"], loc);
+                (ok, format!("abort {code} in {loc}"))
             }
-            Outcome::VmError(status) => (
-                expected["vm_error"].as_u64() == Some(*status),
-                format!("VM error {status}"),
-            ),
+            Outcome::VmError(status, loc) => {
+                let ok = expected["vm_error"].as_u64() == Some(*status)
+                    && location_ok(&expected["location"], loc);
+                (ok, format!("VM error {status} in {loc}"))
+            }
             Outcome::Failed(exit) => (false, format!("exit code {exit}")),
         };
         if ok {
@@ -215,4 +228,9 @@ async fn test(dir: PathBuf) -> Result<()> {
     println!("{passed} passed, {failed} failed; {total_cycles} cycles total");
     ensure!(failed == 0, "{failed} test(s) failed");
     Ok(())
+}
+
+/// An expected abort location (canonical module id) matches, or none was expected.
+fn location_ok(expected: &Value, actual: &str) -> bool {
+    expected.as_str().is_none_or(|want| want == actual)
 }

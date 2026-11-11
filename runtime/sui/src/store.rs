@@ -9,13 +9,15 @@ use alloc::{collections::BTreeMap, vec::Vec};
 use core::ptr;
 
 use move_rt_core::{
-    bcs,
+    abort_in, bcs,
     desc::{self, Kind, Slot, TypeDesc, Value},
     global::Global,
-    move_rt_abort,
 };
 
-use crate::Address;
+use crate::{
+    Address,
+    location::{DYNAMIC_FIELD, TEST_SCENARIO},
+};
 
 // Abort codes of `sui::dynamic_field`.
 const E_FIELD_ALREADY_EXISTS: u64 = 0;
@@ -39,8 +41,8 @@ fn find(parent: &Address, id: &Address, d: &TypeDesc) -> *mut u8 {
     });
     match found {
         Some((true, true, data)) => data,
-        Some((true, false, _)) => move_rt_abort(E_FIELD_TYPE_MISMATCH),
-        _ => move_rt_abort(E_FIELD_DOES_NOT_EXIST),
+        Some((true, false, _)) => abort_in(DYNAMIC_FIELD, E_FIELD_TYPE_MISMATCH),
+        _ => abort_in(DYNAMIC_FIELD, E_FIELD_DOES_NOT_EXIST),
     }
 }
 
@@ -130,7 +132,7 @@ pub unsafe extern "C" fn move_rt_sui_df_add(parent: &Address, d: &TypeDesc, chil
         .is_some()
     });
     if exists {
-        move_rt_abort(E_FIELD_ALREADY_EXISTS);
+        abort_in(DYNAMIC_FIELD, E_FIELD_ALREADY_EXISTS);
     }
 }
 
@@ -259,7 +261,7 @@ pub unsafe extern "C" fn move_rt_sui_take(
         Some(obj)
     });
     let Some(obj) = obj else {
-        move_rt_abort(E_OBJECT_NOT_FOUND)
+        abort_in(TEST_SCENARIO, E_OBJECT_NOT_FOUND)
     };
     // SAFETY: the stored object is `d.size` initialized bytes; `out` has room for them.
     unsafe { ptr::copy_nonoverlapping(obj.data, out, d.size() as usize) };

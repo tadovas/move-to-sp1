@@ -56,6 +56,7 @@ impl<'ctx> Frame<'ctx> {
 
 impl<'ctx> Translator<'ctx, '_> {
     pub(super) fn translate_function(&mut self, inst: &FnInst) -> Result<()> {
+        self.current_module.set(Some(inst.id.module));
         let prog = self.prog;
         let cm = prog.module(inst.id.module);
         let def = cm.function_def_at(inst.id.def);

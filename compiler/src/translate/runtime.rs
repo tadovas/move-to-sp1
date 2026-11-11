@@ -10,7 +10,7 @@ use inkwell::{
     values::{BasicMetadataValueEnum, BasicValueEnum, IntValue, PointerValue},
 };
 
-use super::Translator;
+use super::{Translator, program::ModuleIdx};
 
 /// Move VM status codes (`move_core_types::vm_status::StatusCode`) for runtime failures
 /// that are not user `abort`s.
@@ -81,10 +81,44 @@ impl<'ctx> Translator<'ctx, '_> {
     }
 
     /// Move `abort code`.
+    /// Move `abort code`, located in the module being translated.
     pub(super) fn abort(&self, code: IntValue<'ctx>) -> Result<()> {
-        self.call_runtime("move_rt_abort", None, &[code.into()])?;
+        self.abort_in(
+            code,
+            self.current_module.get().expect("translating a function"),
+        )
+    }
+
+    /// Move `abort code`, located in module `m` (natives abort in their own module).
+    pub(super) fn abort_in(&self, code: IntValue<'ctx>, m: ModuleIdx) -> Result<()> {
+        let (loc, len) = self.location(m);
+        self.call_runtime(
+            "move_rt_abort",
+            None,
+            &[code.into(), loc.into(), len.into()],
+        )?;
         self.builder.build_unreachable()?;
         Ok(())
+    }
+
+    /// The canonical id of module `m` (`<64 hex address>::<name>`), as a constant
+    /// (pointer, length) for abort locations.
+    fn location(&self, m: ModuleIdx) -> (PointerValue<'ctx>, IntValue<'ctx>) {
+        let cm = self.prog.module(m);
+        let id = format!("{}::{}", cm.address().to_canonical_string(false), cm.name());
+        let name = format!("move.loc.{id}");
+        let g = self.module.get_global(&name).unwrap_or_else(|| {
+            let data = self.ctx.const_string(id.as_bytes(), false);
+            let g = self.module.add_global(data.get_type(), None, &name);
+            g.set_initializer(&data);
+            g.set_constant(true);
+            g.set_linkage(inkwell::module::Linkage::Private);
+            g
+        });
+        (
+            g.as_pointer_value(),
+            self.ctx.i64_type().const_int(id.len() as u64, false),
+        )
     }
 
     /// Branch to `move_rt_vm_error(err)` when `fail` holds; continue in a fresh block otherwise.
@@ -95,7 +129,12 @@ impl<'ctx> Translator<'ctx, '_> {
         self.builder.build_conditional_branch(fail, bad, ok)?;
         self.builder.position_at_end(bad);
         let code = self.ctx.i64_type().const_int(err as u64, false);
-        self.call_runtime("move_rt_vm_error", None, &[code.into()])?;
+        let (loc, len) = self.location(self.current_module.get().expect("translating a function"));
+        self.call_runtime(
+            "move_rt_vm_error",
+            None,
+            &[code.into(), loc.into(), len.into()],
+        )?;
         self.builder.build_unreachable()?;
         self.builder.position_at_end(ok);
         Ok(())
