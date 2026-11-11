@@ -8,7 +8,7 @@
 //!   `FnInst` (definition + concrete type arguments).
 //! * Value representation (see [`Translator::llvm_type`]): integers are LLVM integers,
 //!   structs are LLVM structs held by value, references are pointers, vectors are a
-//!   `{ptr, len, cap}` header (see `vector.rs`).
+//!   `{ptr, len, cap}` header (see `vector.rs`), enums are a tagged union (`enums.rs`).
 //! * Move semantics (overflow checks, bounds checks, deep copies, structural equality)
 //!   are spelled out in `ops.rs`, `vector.rs` and `value.rs`.
 //!
@@ -19,11 +19,13 @@
 //! * `ops`      — arithmetic / comparison / cast semantics
 //! * `value`    — copy, equality, constants
 //! * `vector`   — vector layout and operations
+//! * `enums`    — enum layout, variants and `VariantSwitch`
 //! * `natives`  — native functions (`std::vector`, ...)
 //! * `runtime`  — the `move_rt_*` runtime interface
 //! * `entry`    — `__move_entry` glue and the program ABI
 
 mod entry;
+mod enums;
 mod function;
 mod natives;
 mod ops;
@@ -42,6 +44,7 @@ use inkwell::{
     builder::Builder,
     context::Context,
     module::{Linkage, Module},
+    targets::TargetData,
     types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, IntType, StructType},
     values::{FunctionValue, IntValue},
 };
@@ -68,10 +71,12 @@ pub struct Translator<'ctx, 'p> {
     queue: VecDeque<FnInst>,
     /// LLVM struct types for instantiated Move structs (memoized by `llvm_type`).
     struct_types: RefCell<HashMap<Type, StructType<'ctx>>>,
+    /// Target layout (sizes/alignments for enum payloads).
+    target_data: TargetData,
 }
 
 impl<'ctx, 'p> Translator<'ctx, 'p> {
-    pub fn new(ctx: &'ctx Context, prog: &'p Program<'p>) -> Self {
+    pub fn new(ctx: &'ctx Context, prog: &'p Program<'p>, target_data: TargetData) -> Self {
         Self {
             ctx,
             module: ctx.create_module("move"),
@@ -80,6 +85,7 @@ impl<'ctx, 'p> Translator<'ctx, 'p> {
             functions: HashMap::new(),
             queue: VecDeque::new(),
             struct_types: RefCell::default(),
+            target_data,
         }
     }
 
@@ -114,10 +120,11 @@ impl<'ctx, 'p> Translator<'ctx, 'p> {
         Ok(match ty {
             Type::Vector(_) => self.vector_type().into(),
             Type::Ref(_) => self.ptr_type().into(),
+            Type::Struct(..) | Type::Enum(..) if self.struct_types.borrow().contains_key(ty) => {
+                self.struct_types.borrow()[ty].into()
+            }
+            Type::Enum(..) => self.enum_layout(ty)?.into(),
             Type::Struct(id, args) => {
-                if let Some(t) = self.struct_types.borrow().get(ty) {
-                    return Ok((*t).into());
-                }
                 let st = self
                     .ctx
                     .opaque_struct_type(&format!("move.{}", ty.display(self.prog)));

@@ -60,6 +60,7 @@ pub extern "C" fn move_rt_vm_error(status: u64) -> ! {
     let name = match status {
         4017 => "ARITHMETIC_ERROR",
         4018 => "VECTOR_OPERATION_ERROR",
+        4030 => "VARIANT_TAG_MISMATCH",
         _ => "VM_ERROR",
     };
     panic!("Move VM error {name} ({status})");

@@ -9,7 +9,7 @@ use std::fmt::Write;
 use anyhow::{Result, anyhow, bail};
 use move_binary_format::file_format::SignatureToken;
 
-use super::program::{ModuleIdx, Program, StructId};
+use super::program::{Datatype, EnumId, ModuleIdx, Program, StructId};
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Type {
@@ -23,6 +23,7 @@ pub enum Type {
     Address,
     Vector(Box<Type>),
     Struct(StructId, Vec<Type>),
+    Enum(EnumId, Vec<Type>),
     /// `&T` and `&mut T` (mutability doesn't matter after verification).
     Ref(Box<Type>),
 }
@@ -47,13 +48,11 @@ impl Type {
             T::Address => Type::Address,
             T::Signer => bail!("signer is not supported"),
             T::Vector(e) => Type::Vector(Box::new(Self::from_token(prog, m, e, subst)?)),
-            T::Datatype(h) => Type::Struct(prog.resolve_struct(m, *h)?, vec![]),
+            T::Datatype(h) => Self::datatype(prog.resolve_datatype(m, *h)?, vec![]),
             T::DatatypeInstantiation(inst) => {
                 let (h, args) = &**inst;
-                Type::Struct(
-                    prog.resolve_struct(m, *h)?,
-                    Self::from_tokens(prog, m, args, subst)?,
-                )
+                let args = Self::from_tokens(prog, m, args, subst)?;
+                Self::datatype(prog.resolve_datatype(m, *h)?, args)
             }
             T::Reference(t) | T::MutableReference(t) => {
                 Type::Ref(Box::new(Self::from_token(prog, m, t, subst)?))
@@ -74,6 +73,13 @@ impl Type {
         toks.iter()
             .map(|t| Self::from_token(prog, m, t, subst))
             .collect()
+    }
+
+    fn datatype(d: Datatype, args: Vec<Type>) -> Type {
+        match d {
+            Datatype::Struct(id) => Type::Struct(id, args),
+            Datatype::Enum(id) => Type::Enum(id, args),
+        }
     }
 
     /// Bit width of integer-like types (bool = 1, address = 256).
@@ -116,6 +122,10 @@ impl Type {
                 let _ = write!(out, "{}", prog.struct_name(*id));
                 write_args(prog, args, out);
             }
+            Type::Enum(id, args) => {
+                let _ = write!(out, "{}", prog.enum_name(*id));
+                write_args(prog, args, out);
+            }
             Type::Ref(t) => {
                 out.push('&');
                 t.write(prog, out);
@@ -155,5 +165,20 @@ pub fn struct_fields(prog: &Program, id: StructId, args: &[Type]) -> Result<Vec<
     fields
         .iter()
         .map(|f| Type::from_token(prog, id.module, &f.signature.0, args))
+        .collect()
+}
+
+/// Field types of every variant of an instantiated enum, indexed by tag.
+pub fn variant_fields(prog: &Program, id: EnumId, args: &[Type]) -> Result<Vec<Vec<Type>>> {
+    let cm = prog.module(id.module);
+    cm.enum_def_at(id.def)
+        .variants
+        .iter()
+        .map(|v| {
+            v.fields
+                .iter()
+                .map(|f| Type::from_token(prog, id.module, &f.signature.0, args))
+                .collect()
+        })
         .collect()
 }

@@ -17,6 +17,7 @@ use super::Translator;
 pub enum VmError {
     Arithmetic = 4017,
     VectorOperation = 4018,
+    VariantTagMismatch = 4030,
 }
 
 impl<'ctx> Translator<'ctx, '_> {

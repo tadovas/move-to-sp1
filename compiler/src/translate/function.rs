@@ -13,12 +13,13 @@ use inkwell::{
     values::{BasicMetadataValueEnum, BasicValueEnum, PointerValue},
 };
 use move_binary_format::file_format::{
-    Bytecode, FieldHandleIndex, SignatureIndex, StructDefinitionIndex,
+    Bytecode, FieldHandleIndex, JumpTableInner, SignatureIndex, StructDefinitionIndex,
+    VariantHandleIndex, VariantInstantiationHandleIndex,
 };
 
 use super::{
     FnInst, Translator,
-    program::{ModuleIdx, StructId},
+    program::{EnumId, ModuleIdx, StructId},
     types::{Type, struct_fields},
 };
 
@@ -33,6 +34,8 @@ pub(super) struct Frame<'ctx> {
     pub subst: Vec<Type>,
     returns: Vec<Type>,
     locals: Vec<(PointerValue<'ctx>, Type)>,
+    /// `VariantSwitch` jump tables: target pc per variant tag.
+    jump_tables: Vec<Vec<usize>>,
     pub stack: Vec<Slot<'ctx>>,
 }
 
@@ -69,6 +72,15 @@ impl<'ctx> Translator<'ctx, '_> {
             &inst.type_args,
         )?;
 
+        let jump_tables: Vec<Vec<usize>> = code
+            .jump_tables
+            .iter()
+            .map(|jt| {
+                let JumpTableInner::Full(offsets) = &jt.jump_table;
+                offsets.iter().map(|o| *o as usize).collect()
+            })
+            .collect();
+
         // Basic blocks start at 0, at branch targets and after terminators.
         let n = code.code.len();
         let mut leaders = BTreeSet::from([0usize]);
@@ -80,7 +92,10 @@ impl<'ctx> Translator<'ctx, '_> {
                 Bytecode::Ret | Bytecode::Abort => {
                     leaders.insert(pc + 1);
                 }
-                Bytecode::VariantSwitch(_) => bail!("enums are not supported yet"),
+                Bytecode::VariantSwitch(jt) => {
+                    leaders.extend(jump_tables[jt.0 as usize].iter().copied());
+                    leaders.insert(pc + 1);
+                }
                 _ => {}
             }
         }
@@ -111,6 +126,7 @@ impl<'ctx> Translator<'ctx, '_> {
             subst: inst.type_args.clone(),
             returns,
             locals,
+            jump_tables,
             stack: vec![],
         };
         let mut open = false; // does the current block still need a terminator?
@@ -380,6 +396,41 @@ impl<'ctx> Translator<'ctx, '_> {
                 self.call(fr, FnInst { id, type_args })?;
             }
 
+            // ---- enums
+            B::PackVariant(h) => {
+                let (ty, tag) = self.variant(fr, *h)?;
+                self.pack_variant_op(fr, &ty, tag)?
+            }
+            B::PackVariantGeneric(h) => {
+                let (ty, tag) = self.variant_generic(fr, *h)?;
+                self.pack_variant_op(fr, &ty, tag)?
+            }
+            B::UnpackVariant(h) => {
+                let (ty, tag) = self.variant(fr, *h)?;
+                self.unpack_variant_op(fr, &ty, tag)?
+            }
+            B::UnpackVariantGeneric(h) => {
+                let (ty, tag) = self.variant_generic(fr, *h)?;
+                self.unpack_variant_op(fr, &ty, tag)?
+            }
+            B::UnpackVariantImmRef(h) | B::UnpackVariantMutRef(h) => {
+                let (ty, tag) = self.variant(fr, *h)?;
+                self.unpack_variant_ref_op(fr, &ty, tag)?
+            }
+            B::UnpackVariantGenericImmRef(h) | B::UnpackVariantGenericMutRef(h) => {
+                let (ty, tag) = self.variant_generic(fr, *h)?;
+                self.unpack_variant_ref_op(fr, &ty, tag)?
+            }
+            B::VariantSwitch(jt) => {
+                let (r, ty) = fr.pop()?;
+                let targets: Vec<_> = fr.jump_tables[jt.0 as usize]
+                    .iter()
+                    .map(|pc| blocks[pc])
+                    .collect();
+                self.variant_switch(&deref(ty)?, r.into_pointer_value(), &targets)?;
+                return Ok(true);
+            }
+
             other => bail!("instruction not supported yet: {other:?}"),
         }
         Ok(false)
@@ -496,6 +547,68 @@ impl<'ctx> Translator<'ctx, '_> {
             self.builder
                 .build_struct_gep(st, r.into_pointer_value(), fh.field as u32, "field")?;
         fr.push(p, Type::Ref(Box::new(fty)));
+        Ok(())
+    }
+
+    // ---- enums
+
+    /// Enum type and tag of a (non-generic) variant handle.
+    fn variant(&self, fr: &Frame, h: VariantHandleIndex) -> Result<(Type, u16)> {
+        let vh = self.prog.module(fr.m).variant_handle_at(h);
+        Ok((
+            Type::Enum(
+                EnumId {
+                    module: fr.m,
+                    def: vh.enum_def,
+                },
+                vec![],
+            ),
+            vh.variant,
+        ))
+    }
+
+    fn variant_generic(
+        &self,
+        fr: &Frame,
+        h: VariantInstantiationHandleIndex,
+    ) -> Result<(Type, u16)> {
+        let cm = self.prog.module(fr.m);
+        let vh = cm.variant_instantiation_handle_at(h);
+        let inst = cm.enum_instantiation_at(vh.enum_def);
+        let args = self.sig_types(fr, inst.type_parameters)?;
+        Ok((
+            Type::Enum(
+                EnumId {
+                    module: fr.m,
+                    def: inst.def,
+                },
+                args,
+            ),
+            vh.variant,
+        ))
+    }
+
+    fn pack_variant_op(&mut self, fr: &mut Frame<'ctx>, ty: &Type, tag: u16) -> Result<()> {
+        let n = self.variant_struct(ty, tag)?.1.len();
+        let fields: Vec<_> = fr.pop_n(n)?.into_iter().map(|(v, _)| v).collect();
+        let v = self.pack_variant(ty, tag, &fields)?;
+        fr.push(v, ty.clone());
+        Ok(())
+    }
+
+    fn unpack_variant_op(&mut self, fr: &mut Frame<'ctx>, ty: &Type, tag: u16) -> Result<()> {
+        let (v, _) = fr.pop()?;
+        for (f, fty) in self.unpack_variant(ty, tag, v)? {
+            fr.push(f, fty);
+        }
+        Ok(())
+    }
+
+    fn unpack_variant_ref_op(&mut self, fr: &mut Frame<'ctx>, ty: &Type, tag: u16) -> Result<()> {
+        let (r, _) = fr.pop()?;
+        for (p, fty) in self.variant_field_ptrs(ty, r.into_pointer_value(), tag)? {
+            fr.push(p, Type::Ref(Box::new(fty)));
+        }
         Ok(())
     }
 

@@ -12,7 +12,7 @@ use inkwell::{
 
 use super::{
     Translator,
-    types::{Type, struct_fields},
+    types::{Type, struct_fields, variant_fields},
 };
 
 impl<'ctx> Translator<'ctx, '_> {
@@ -24,6 +24,13 @@ impl<'ctx> Translator<'ctx, '_> {
                 let mut any = false;
                 for f in struct_fields(self.prog, *id, args)? {
                     any |= self.has_heap(&f)?;
+                }
+                any
+            }
+            Type::Enum(id, args) => {
+                let mut any = false;
+                for f in variant_fields(self.prog, *id, args)?.iter().flatten() {
+                    any |= self.has_heap(f)?;
                 }
                 any
             }
@@ -87,6 +94,21 @@ impl<'ctx> Translator<'ctx, '_> {
                 }
                 Ok(agg.into())
             }
+            Type::Enum(..) => {
+                // copy the whole value, then deep-copy the active variant's fields in place
+                let lty = self.llvm_type(ty)?;
+                let tmp = self.builder.build_alloca(lty, "enum")?;
+                self.builder.build_store(tmp, src)?;
+                self.for_each_variant(ty, tmp, |t, _, fields| {
+                    for (p, fty) in fields {
+                        let v = t.builder.build_load(t.llvm_type(&fty)?, p, "")?;
+                        let v = t.copy_value(&fty, v)?;
+                        t.builder.build_store(p, v)?;
+                    }
+                    Ok(())
+                })?;
+                Ok(self.builder.build_load(lty, tmp, "")?)
+            }
             _ => Ok(src),
         }
     }
@@ -105,7 +127,7 @@ impl<'ctx> Translator<'ctx, '_> {
                 let r = self.builder.build_load(lty, r.into_pointer_value(), "")?;
                 self.equals(inner, l, r)
             }
-            Type::Vector(_) | Type::Struct(..) => {
+            Type::Vector(_) | Type::Struct(..) | Type::Enum(..) => {
                 let lty = self.llvm_type(ty)?;
                 let name = format!("move.eq.{}", ty.display(self.prog));
                 let fty = self
@@ -182,6 +204,40 @@ impl<'ctx> Translator<'ctx, '_> {
                     self.builder.build_conditional_branch(eq, next, differ)?;
                     self.builder.position_at_end(next);
                 }
+            }
+            Type::Enum(..) => {
+                let lty = self.llvm_type(ty)?;
+                let (pa, pb) = (
+                    self.builder.build_alloca(lty, "a")?,
+                    self.builder.build_alloca(lty, "b")?,
+                );
+                self.builder.build_store(pa, a)?;
+                self.builder.build_store(pb, b)?;
+                let same_tag = self.builder.build_int_compare(
+                    IntPredicate::EQ,
+                    self.load_tag(ty, pa)?,
+                    self.load_tag(ty, pb)?,
+                    "",
+                )?;
+                let cont = self.ctx.append_basic_block(f, "same_tag");
+                self.builder
+                    .build_conditional_branch(same_tag, cont, differ)?;
+                self.builder.position_at_end(cont);
+                self.for_each_variant(ty, pa, |t, tag, fields_a| {
+                    let fields_b = t.field_ptrs(ty, pb, tag)?;
+                    for ((x, fty), (y, _)) in fields_a.into_iter().zip(fields_b) {
+                        let lty = t.llvm_type(&fty)?;
+                        let (x, y) = (
+                            t.builder.build_load(lty, x, "")?,
+                            t.builder.build_load(lty, y, "")?,
+                        );
+                        let eq = t.equals(&fty, x, y)?;
+                        let next = t.ctx.append_basic_block(f, "next");
+                        t.builder.build_conditional_branch(eq, next, differ)?;
+                        t.builder.position_at_end(next);
+                    }
+                    Ok(())
+                })?;
             }
             other => bail!("eq_body on {other:?}"),
         }

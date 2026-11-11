@@ -79,9 +79,9 @@ fn main() -> Result<()> {
 
             // 2. bytecode -> LLVM IR
             let ctx = Context::create();
-            let mut translator = translate::Translator::new(&ctx, &prog);
-            let abi = translator.compile(entry)?;
             let tm = target::machine()?;
+            let mut translator = translate::Translator::new(&ctx, &prog, tm.get_target_data());
+            let abi = translator.compile(entry)?;
             if let Some(p) = emit_llvm {
                 target::prepare(translator.module(), &tm);
                 translator

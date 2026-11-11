@@ -43,6 +43,10 @@ types.move|test_sort|50|1
 types.move|test_pop||206
 types.move|test_oob||abort:VECTOR_OPERATION_ERROR
 types.move|test_std||754329
+enums.move|test_shapes||24
+enums.move|test_widen||2412
+enums.move|test_generic||512
+enums.move|test_eq||111
 CASES
 
 echo "$pass passed, $fail failed"
