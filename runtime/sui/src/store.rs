@@ -1,4 +1,5 @@
-//! Child objects of dynamic fields (`sui::dynamic_field` natives).
+//! Objects that outlive the Move call that created them: child objects of dynamic fields
+//! (`sui::dynamic_field` natives) and shared objects (`sui::test_scenario` take/return).
 //!
 //! On chain these are separate objects owned by their parent; here they live in an
 //! in-memory map for the duration of the run, keyed by child ID. Values are moved in and
@@ -125,4 +126,59 @@ pub extern "C" fn move_rt_sui_df_has(parent: &Address, id: &Address, d: *const T
         s.get(id)
             .is_some_and(|c| c.parent == *parent && (d.is_null() || ptr::eq(c.desc, d)))
     })
+}
+
+// ---- shared objects (for `sui::test_scenario`)
+
+// Abort code of `sui::test_scenario` when an object is not available.
+const E_OBJECT_NOT_FOUND: u64 = 3;
+
+struct Shared {
+    desc: *const TypeDesc,
+    data: *mut u8,
+}
+
+/// Shared objects not currently taken, and the IDs of those taken.
+static SHARED: Global<(BTreeMap<Address, Shared>, BTreeMap<Address, ()>)> =
+    Global::new((BTreeMap::new(), BTreeMap::new()));
+
+/// Store a just-shared object (moved bitwise; its ID is its leading `UID`).
+///
+/// # Safety
+/// `p` points to an initialized object of type `d`.
+pub(crate) unsafe fn put_shared(d: &TypeDesc, p: *const u8) {
+    let size = d.size() as usize;
+    let data = desc::alloc(size);
+    // SAFETY: `p` holds `size` initialized bytes; `data` is a fresh allocation of `size`.
+    unsafe { ptr::copy_nonoverlapping(p, data, size) };
+    // SAFETY: objects start with `id: UID`, i.e. their 32-byte address.
+    let id: Address = unsafe { *(data as *const Address) };
+    SHARED.with(|(available, taken)| {
+        taken.remove(&id);
+        available.insert(id, Shared { desc: d, data });
+    });
+}
+
+/// `test_scenario::take_shared_by_id<T>(id)`: moves the shared object into `out`.
+///
+/// # Safety
+/// `out` is valid for writes of a value of type `d`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn move_rt_sui_take_shared(id: &Address, d: &TypeDesc, out: *mut u8) {
+    let obj = SHARED.with(|(available, taken)| {
+        let obj = available.remove(id).filter(|o| ptr::eq(o.desc, d))?;
+        taken.insert(*id, ());
+        Some(obj)
+    });
+    let Some(obj) = obj else {
+        move_rt_abort(E_OBJECT_NOT_FOUND)
+    };
+    // SAFETY: the stored object is `d.size` initialized bytes; `out` has room for them.
+    unsafe { ptr::copy_nonoverlapping(obj.data, out, d.size() as usize) };
+}
+
+/// `test_scenario::was_taken_shared(id)`.
+#[unsafe(no_mangle)]
+pub extern "C" fn move_rt_sui_was_taken_shared(id: &Address) -> bool {
+    SHARED.with(|(_, taken)| taken.contains_key(id))
 }

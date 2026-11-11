@@ -147,9 +147,94 @@ impl<'ctx> Translator<'ctx, '_> {
                 fr.push(has, Type::Bool);
             }
 
+            // ---- clock: a singleton object in the runtime
+            "clock::native_borrow" => {
+                let clock = self.clock_type()?;
+                let args = [self.type_desc(&clock)?.into()];
+                let p = self.call_runtime(
+                    "move_rt_sui_clock_borrow",
+                    Some(self.ptr_type().into()),
+                    &args,
+                )?;
+                fr.push(p.unwrap(), Type::Ref(Box::new(clock)));
+            }
+            "clock::native_set_timestamp_ms_for_testing" => {
+                let (ts, _) = fr.pop()?;
+                let args = [self.type_desc(&self.clock_type()?)?.into(), ts.into()];
+                self.call_runtime("move_rt_sui_clock_set", None, &args)?;
+            }
+
+            // ---- tx_context: gas parameters and the test-only `replace`
+            "tx_context::native_rgp"
+            | "tx_context::native_gas_price"
+            | "tx_context::native_gas_budget" => {
+                let rt = match name {
+                    "tx_context::native_rgp" => "move_rt_sui_rgp",
+                    "tx_context::native_gas_price" => "move_rt_sui_gas_price",
+                    _ => "move_rt_sui_gas_budget",
+                };
+                let v = self.call_runtime(rt, Some(i64t.into()), &[])?.unwrap();
+                fr.push(v, Type::U64);
+            }
+            "tx_context::native_sponsor" => {
+                // sponsored transactions are not modelled: no sponsor
+                let v = self.vec_from_values(&Type::Address, &[])?;
+                fr.push(v, Type::Vector(Box::new(Type::Address)));
+            }
+            "tx_context::replace" => {
+                // (sender, tx_hash, epoch, epoch_timestamp_ms, ids_created, rgp, gas_price,
+                //  gas_budget, sponsor); the sponsor is dropped
+                let mut a = fr.pop_n(9)?.into_iter().map(|(v, _)| v);
+                let (sender, tx_hash) = (a.next().unwrap(), a.next().unwrap());
+                let mut args: Vec<BasicMetadataValueEnum> =
+                    vec![self.spill(sender)?.into(), self.spill(tx_hash)?.into()];
+                args.extend(a.take(6).map(BasicMetadataValueEnum::from));
+                self.call_runtime("move_rt_sui_tx_replace", None, &args)?;
+            }
+
+            // ---- test_scenario: shared objects across transactions
+            "test_scenario::take_shared_by_id" => {
+                let (id, _) = fr.pop()?;
+                fr.pop()?; // &Scenario
+                let lty = self.llvm_type(&t(0))?;
+                let out = self.builder.build_alloca(lty, "shared")?;
+                let args = [
+                    self.spill(id)?.into(),
+                    self.type_desc(&t(0))?.into(),
+                    out.into(),
+                ];
+                self.call_runtime("move_rt_sui_take_shared", None, &args)?;
+                fr.push(self.builder.build_load(lty, out, "")?, t(0));
+            }
+            "test_scenario::was_taken_shared" => {
+                let (id, _) = fr.pop()?;
+                let taken =
+                    self.runtime_bool("move_rt_sui_was_taken_shared", &[self.spill(id)?.into()])?;
+                fr.push(taken, Type::Bool);
+            }
+            "test_scenario::end_transaction" => {
+                // effects summaries are not tracked: an empty `TransactionEffects` (all-zero
+                // memory is a valid value: empty vectors and maps, zero counts)
+                let (_, returns) = self.signature(f)?;
+                let empty = self.llvm_type(&returns[0])?.const_zero();
+                fr.push(empty, returns[0].clone());
+            }
+
             _ => return Ok(false),
         }
         Ok(true)
+    }
+
+    fn clock_type(&self) -> Result<Type> {
+        let id = self
+            .prog
+            .struct_by_name(
+                &move_core_types::account_address::AccountAddress::TWO,
+                "clock",
+                "Clock",
+            )
+            .ok_or_else(|| anyhow::anyhow!("sui::clock::Clock not loaded"))?;
+        Ok(Type::Struct(id, vec![]))
     }
 
     /// Call a runtime function that writes an address to a trailing out-pointer.

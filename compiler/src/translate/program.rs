@@ -120,6 +120,26 @@ impl<'a> Program<'a> {
         bail!("datatype {mname}::{name} not found")
     }
 
+    /// A struct by address, module and name (e.g. `0x2::clock::Clock`), if loaded.
+    pub fn struct_by_name(
+        &self,
+        addr: &AccountAddress,
+        module: &str,
+        name: &str,
+    ) -> Option<StructId> {
+        let m = self.find_module(addr, IdentStr::new(module).ok()?)?;
+        let cm = self.modules[m];
+        let def = cm.struct_defs().iter().position(|d| {
+            cm.identifier_at(cm.datatype_handle_at(d.struct_handle).name)
+                .as_str()
+                == name
+        })?;
+        Some(StructId {
+            module: m,
+            def: StructDefinitionIndex(def as u16),
+        })
+    }
+
     pub fn is_native(&self, f: FnId) -> bool {
         self.modules[f.module].function_def_at(f.def).code.is_none()
     }

@@ -150,6 +150,9 @@ impl<'ctx> Translator<'ctx, '_> {
                 )?;
             }
             "debug::print_stack_trace" => {}
+            "unit_test::destroy" => {
+                fr.pop()?; // test-only: drop any value (memory is never freed anyway)
+            }
             // Resolved at compile time; without package upgrades, defining == original ids.
             "type_name::with_defining_ids" | "type_name::with_original_ids" => {
                 let (_, returns) = self.signature(f)?;

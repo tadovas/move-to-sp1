@@ -1,0 +1,9 @@
+[package]
+name = "deepbook_v2_demo"
+edition = "2024"
+
+[dependencies]
+DeepBook = { local = "../deepbook-v2" }
+
+[addresses]
+demo = "0x100"

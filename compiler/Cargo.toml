@@ -9,7 +9,9 @@ license = "Apache-2.0"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 inkwell = { version = "0.11", features = ["llvm20-1"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.8"
 object = { version = "0.37", default-features = false, features = ["read", "write", "elf", "std"] }
 
 move-compiler = { git = "https://github.com/MystenLabs/sui", rev = "1c2b97ab17ccd5fb43c445e44351bc269ddaf76f" }

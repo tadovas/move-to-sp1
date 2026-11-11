@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use move_rt_core::{
-    desc::{TypeDesc, Value},
+    desc::{TypeDesc, Value, VecHeader},
     global::Global,
 };
 use sha2::{Digest, Sha256};
@@ -16,6 +16,9 @@ struct TxState {
     epoch: u64,
     epoch_timestamp_ms: u64,
     ids_created: u64,
+    rgp: u64,
+    gas_price: u64,
+    gas_budget: u64,
 }
 
 static TX: Global<TxState> = Global::new(TxState {
@@ -24,6 +27,9 @@ static TX: Global<TxState> = Global::new(TxState {
     epoch: 0,
     epoch_timestamp_ms: 0,
     ids_created: 0,
+    rgp: 1_000,
+    gas_price: 1_000,
+    gas_budget: 50_000_000_000,
 });
 
 fn u64_of(v: Value) -> u64 {
@@ -83,5 +89,48 @@ pub extern "C" fn move_rt_sui_fresh_id(out: &mut Address) {
         h.update(tx.ids_created.to_le_bytes());
         tx.ids_created += 1;
         h.finalize().into()
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn move_rt_sui_rgp() -> u64 {
+    TX.with(|tx| tx.rgp)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn move_rt_sui_gas_price() -> u64 {
+    TX.with(|tx| tx.gas_price)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn move_rt_sui_gas_budget() -> u64 {
+    TX.with(|tx| tx.gas_budget)
+}
+
+/// `tx_context::replace` (test-only; `sui::test_scenario` starts each transaction with it).
+/// Sponsors are not modelled.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn move_rt_sui_tx_replace(
+    sender: &Address,
+    tx_hash: &VecHeader,
+    epoch: u64,
+    epoch_timestamp_ms: u64,
+    ids_created: u64,
+    rgp: u64,
+    gas_price: u64,
+    gas_budget: u64,
+) {
+    TX.with(|tx| {
+        *tx = TxState {
+            sender: *sender,
+            tx_hash: tx_hash.bytes().to_vec(),
+            epoch,
+            epoch_timestamp_ms,
+            ids_created,
+            rgp,
+            gas_price,
+            gas_budget,
+        }
     });
 }

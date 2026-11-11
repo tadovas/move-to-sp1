@@ -62,6 +62,9 @@ pub unsafe extern "C" fn move_rt_sui_transfer(d: &TypeDesc, p: *const u8, recipi
 pub unsafe extern "C" fn move_rt_sui_share(d: &TypeDesc, p: *const u8) {
     // SAFETY: guaranteed by the caller.
     record(SHARE, unsafe { Value::new(d, p) }, None);
+    // Shared objects stay available to later transactions (`test_scenario::take_shared`).
+    // SAFETY: as above.
+    unsafe { crate::store::put_shared(d, p) };
 }
 
 /// # Safety
