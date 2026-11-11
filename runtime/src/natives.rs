@@ -45,7 +45,7 @@ pub unsafe extern "C" fn move_rt_debug_print(d: &TypeDesc, p: *const u8) {
     sp1_zkvm::syscalls::syscall_write(1, s.as_ptr(), s.len());
 }
 
-// ---- std::hash
+// ---- std::hash (SP1 precompiles via the patched `sha2` / `tiny-keccak` crates)
 
 #[unsafe(no_mangle)]
 pub extern "C" fn move_rt_sha2_256(data: &VecHeader, out: &mut MaybeUninit<VecHeader>) {
@@ -55,8 +55,12 @@ pub extern "C" fn move_rt_sha2_256(data: &VecHeader, out: &mut MaybeUninit<VecHe
 
 #[unsafe(no_mangle)]
 pub extern "C" fn move_rt_sha3_256(data: &VecHeader, out: &mut MaybeUninit<VecHeader>) {
-    use sha3::Digest;
-    out.write(VecHeader::from_bytes(&sha3::Sha3_256::digest(data.bytes())));
+    use tiny_keccak::{Hasher, Sha3};
+    let mut h = Sha3::v256();
+    h.update(data.bytes());
+    let mut digest = [0u8; 32];
+    h.finalize(&mut digest);
+    out.write(VecHeader::from_bytes(&digest));
 }
 
 // ---- std::string (UTF-8 helpers; the Move side guarantees `v` holds valid UTF-8)
