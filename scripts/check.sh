@@ -19,7 +19,7 @@ while IFS='|' read -r file entry args expected; do
     expected=$("scripts/${file%.move}_model.py" $args)
   fi
   elf="out/${entry}.elf"
-  if ! "$M2S" build "examples/$file" -a demo=0x2 -e "$entry" -o "$elf" 2>/tmp/m2s.err; then
+  if ! "$M2S" build "examples/$file" -a demo=0x100 -e "$entry" -o "$elf" 2>/tmp/m2s.err; then
     echo "FAIL $entry: compile error"; sed 's/^/    /' /tmp/m2s.err | tail -5; fail=$((fail+1)); continue
   fi
   # shellcheck disable=SC2086

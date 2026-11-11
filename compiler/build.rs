@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    embed_stdlib();
+    embed_frameworks();
     println!("cargo:rerun-if-env-changed=MOVE2SP1_RUNTIME");
     let lib = match std::env::var("MOVE2SP1_RUNTIME") {
         Ok(p) => PathBuf::from(p),
@@ -56,30 +56,41 @@ fn build_runtime() -> PathBuf {
     dir.join("target/riscv64im-succinct-zkvm-elf/release/libmove_rt.a")
 }
 
-/// Generate `$OUT_DIR/stdlib.rs`: `STDLIB: &[(file name, source)]` for every `stdlib/*.move`.
-fn embed_stdlib() {
-    let dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("stdlib");
-    println!("cargo:rerun-if-changed={}", dir.display());
-    let mut files: Vec<_> = std::fs::read_dir(&dir)
-        .expect("stdlib/ directory")
-        .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|e| e == "move"))
-        .collect();
-    files.sort();
-    let entries: String = files
-        .iter()
-        .map(|p| {
-            let name = p.file_name().unwrap().to_string_lossy();
-            format!(
-                "    ({name:?}, include_str!({:?})),\n",
-                p.display().to_string()
-            )
-        })
-        .collect();
-    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("stdlib.rs");
-    std::fs::write(
-        out,
-        format!("pub const STDLIB: &[(&str, &str)] = &[\n{entries}];\n"),
-    )
-    .unwrap();
+/// Generate `$OUT_DIR/frameworks.rs`: one `&[(path, source)]` constant per package in
+/// `frameworks/` (every `.move` file under its `sources/`).
+fn embed_frameworks() {
+    let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("frameworks");
+    println!("cargo:rerun-if-changed={}", root.display());
+    let mut out = String::new();
+    for (konst, dir) in [
+        ("MOVE_STDLIB", "move-stdlib"),
+        ("SUI_FRAMEWORK", "sui-framework"),
+    ] {
+        let sources = root.join(dir).join("sources");
+        let mut files = vec![];
+        collect_move_files(&sources, &mut files);
+        files.sort();
+        out += &format!("pub const {konst}: &[(&str, &str)] = &[\n");
+        for f in files {
+            let rel = f.strip_prefix(&sources).unwrap().display().to_string();
+            out += &format!(
+                "    ({rel:?}, include_str!({:?})),\n",
+                f.display().to_string()
+            );
+        }
+        out += "];\n";
+    }
+    let dest = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("frameworks.rs");
+    std::fs::write(dest, out).unwrap();
+}
+
+fn collect_move_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    for e in std::fs::read_dir(dir).expect("framework sources") {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            collect_move_files(&p, out);
+        } else if p.extension().is_some_and(|e| e == "move") {
+            out.push(p);
+        }
+    }
 }

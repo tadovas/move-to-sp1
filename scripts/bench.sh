@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 M2S=compiler/target/release/move2sp1
 VM=runner/target/release/movevm
 mkdir -p out bench
-"$M2S" build examples/amm.move -a demo=0x2 -e apply -o out/amm.elf 2>/dev/null
+"$M2S" build examples/amm.move -a demo=0x100 -e apply -o out/amm.elf 2>/dev/null
 
 commit=$(git rev-parse --short HEAD)$(git diff --quiet HEAD -- . ':!bench' || echo "+dirty")
 [[ -f bench/history.csv ]] || echo "commit,case,cycles" > bench/history.csv
