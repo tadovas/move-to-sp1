@@ -1,0 +1,15 @@
+[package]
+name = "move-rt-sui"
+description = "move2sp1 runtime for Sui Move: the core runtime plus Sui framework natives"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "move_rt_sui"
+crate-type = ["staticlib"]
+
+[dependencies]
+move-rt-core.workspace = true
+sp1-zkvm.workspace = true
+sha2.workspace = true

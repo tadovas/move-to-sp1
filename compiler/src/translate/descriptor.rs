@@ -74,7 +74,9 @@ impl<'ctx> Translator<'ctx, '_> {
 
     /// Pointer to the descriptor of `ty`.
     pub(super) fn type_desc(&self, ty: &Type) -> Result<PointerValue<'ctx>> {
-        let name = format!("move.desc.{}", ty.display(self.prog));
+        // keyed by the canonical name: unique per type (the runtime relies on descriptor
+        // identity, e.g. for dynamic-field type checks)
+        let name = format!("move.desc.{}", ty.canonical(self.prog));
         if let Some(g) = self.module.get_global(&name) {
             return Ok(g.as_pointer_value());
         }

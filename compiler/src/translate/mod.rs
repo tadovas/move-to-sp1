@@ -22,6 +22,7 @@
 //! * `enums`    — enum layout, variants and `VariantSwitch`
 //! * `natives`  — native functions (`std::vector`, `bcs`, `hash`, `string`, `debug`)
 //! * `descriptor` — type descriptors: value layouts the runtime walks (BCS, printing)
+//! * `sui`      — Sui framework (0x2) natives: objects, transfers, events, dynamic fields
 //! * `runtime`  — the `move_rt_*` runtime interface
 //! * `entry`    — `__move_entry` glue and the program ABI
 
@@ -33,12 +34,13 @@ mod natives;
 mod ops;
 mod program;
 mod runtime;
+mod sui;
 mod types;
 mod value;
 mod vector;
 
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 
 use anyhow::{Result, anyhow, ensure};
 use inkwell::{
@@ -71,6 +73,10 @@ pub struct Translator<'ctx, 'p> {
     functions: HashMap<FnInst, FunctionValue<'ctx>>,
     /// Declared but not yet translated.
     queue: VecDeque<FnInst>,
+    /// Native functions reached but not implemented (reported after translation).
+    missing_natives: BTreeSet<String>,
+    /// Types of values recorded as effects (events, transferred objects), for the ABI.
+    effect_types: Vec<Type>,
     /// LLVM struct types for instantiated Move structs (memoized by `llvm_type`).
     struct_types: RefCell<HashMap<Type, StructType<'ctx>>>,
     /// Target layout (sizes/alignments for enum payloads).
@@ -86,6 +92,8 @@ impl<'ctx, 'p> Translator<'ctx, 'p> {
             prog,
             functions: HashMap::new(),
             queue: VecDeque::new(),
+            missing_natives: BTreeSet::new(),
+            effect_types: Vec::new(),
             struct_types: RefCell::default(),
             target_data,
         }
@@ -101,6 +109,13 @@ impl<'ctx, 'p> Translator<'ctx, 'p> {
         while let Some(inst) = self.queue.pop_front() {
             self.translate_function(&inst)
                 .map_err(|e| anyhow!("in {}: {e:#}", self.instance_name(&inst)))?;
+        }
+        if !self.missing_natives.is_empty() {
+            let list: Vec<_> = self.missing_natives.iter().cloned().collect();
+            anyhow::bail!(
+                "unsupported native functions reached:\n  {}",
+                list.join("\n  ")
+            );
         }
         self.entry_glue(entry, target)
     }

@@ -66,7 +66,7 @@ pub fn decode(slot: Slot, input: &mut &[u8]) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn uleb128(mut v: u64, out: &mut Vec<u8>) {
+pub fn uleb128(mut v: u64, out: &mut Vec<u8>) {
     loop {
         let b = (v & 0x7f) as u8;
         v >>= 7;

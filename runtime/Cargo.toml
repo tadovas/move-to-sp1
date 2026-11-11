@@ -1,14 +1,14 @@
-[package]
-name = "move-rt"
+[workspace]
+resolver = "2"
+members = ["core", "sui"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-description = "Runtime linked into every move2sp1 program: SP1 entrypoint + Move natives"
 license = "Apache-2.0"
 
-[lib]
-crate-type = ["staticlib"]
-
-[dependencies]
+[workspace.dependencies]
+move-rt-core = { path = "core" }
 # `bump`: pointer-increment allocator. Move memory is never freed, so a general-purpose
 # allocator (the default, TLSF) only adds cycles.
 sp1-zkvm = { version = "6.10.0", features = ["bump"] }

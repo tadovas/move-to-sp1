@@ -10,7 +10,7 @@ VM=runner/target/debug/movevm
 mkdir -p out
 
 pass=0 fail=0
-# file | entry | args | expected result ("abort:<text>", or "=model" to ask the
+# file (or package dir) | entry | args | expected result ("abort:<text>", or "=model" to ask the
 # reference model scripts/<name>_model.py for the expected result)
 while IFS='|' read -r file entry args expected; do
   [[ -z "$file" || "$file" == \#* ]] && continue
@@ -19,7 +19,14 @@ while IFS='|' read -r file entry args expected; do
     expected=$("scripts/${file%.move}_model.py" $args)
   fi
   elf="out/${entry}.elf"
-  if ! "$M2S" build "examples/$file" -a demo=0x100 -e "$entry" -o "$elf" 2>/tmp/m2s.err; then
+  # a directory means: every .move file under it (a package with its dependencies)
+  if [[ -d "examples/$file" ]]; then
+    srcs=$(find "examples/$file" -name '*.move' | sort)
+  else
+    srcs="examples/$file"
+  fi
+  # shellcheck disable=SC2086
+  if ! "$M2S" build $srcs -a demo=0x100 -a deepbook=0xdee9 -e "$entry" -o "$elf" 2>/tmp/m2s.err; then
     echo "FAIL $entry: compile error"; sed 's/^/    /' /tmp/m2s.err | tail -5; fail=$((fail+1)); continue
   fi
   # shellcheck disable=SC2086
@@ -70,6 +77,7 @@ typename.move|primitive||true
 amm.move|apply|{"reserve_a":1000000,"reserve_b":500000,"lp_supply":707106,"fee_bps":30} [{"SwapAForB":{"amount_in":10000,"min_out":4900}},{"SwapBForA":{"amount_in":2500,"min_out":0}},{"AddLiquidity":{"amount_a":50000,"amount_b":30000}},{"RemoveLiquidity":{"lp":100000}}]|=model
 amm.move|apply|{"reserve_a":1000000,"reserve_b":500000,"lp_supply":707106,"fee_bps":30} [{"SwapAForB":{"amount_in":10000,"min_out":5000}}]|=model
 amm.move|apply|{"reserve_a":0,"reserve_b":0,"lp_supply":0,"fee_bps":5} [{"AddLiquidity":{"amount_a":4000000,"amount_b":9000000}},{"SwapBForA":{"amount_in":90000,"min_out":39000}}]|=model
+deepbook|run|{"id":"0xc01","balance":100000000000} {"id":"0x6","timestamp_ms":1700000000000} {"sender":"0xa11ce","tx_hash":"0x0101010101010101010101010101010101010101010101010101010101010101","epoch":1,"epoch_timestamp_ms":1700000000000,"ids_created":0}|[{"taker_base_bought":4000,"taker_quote_paid":4031,"best_bid":990000000,"best_ask":1010000000,"ask_prices":[1010000000,1020000000],"ask_depths":[1000,5000],"maker_base":[0,6000],"maker_quote":[6146,7880]},10000,20000,{"id":"0x0000000000000000000000000000000000000000000000000000000000000006","timestamp_ms":1700000000000}]
 CASES
 
 echo "$pass passed, $fail failed"

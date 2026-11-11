@@ -1,0 +1,11 @@
+[package]
+name = "move-rt-core"
+description = "Chain-agnostic part of the move2sp1 runtime: SP1 entry, allocation, value views, BCS, std natives"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sp1-zkvm.workspace = true
+sha2.workspace = true
+tiny-keccak.workspace = true

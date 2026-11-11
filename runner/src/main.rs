@@ -108,6 +108,19 @@ async fn run(elf: PathBuf, args: Vec<String>, compact: bool) -> Result<()> {
         shown.compact()
     };
     println!("{}({}) = {text}", abi.entry, args.join(", "));
+    if !out.is_empty() {
+        let effects = abi.decode_effects(&mut out)?;
+        if let out::Out::Array(list) = &effects
+            && !list.is_empty()
+        {
+            let text = if compact {
+                effects.compact()
+            } else {
+                effects.pretty()
+            };
+            println!("effects: {text}");
+        }
+    }
     println!(
         "cycles: {}  (executed in {elapsed:.2?})",
         report.total_instruction_count()

@@ -2,7 +2,9 @@
 //! the program ABI recorded in the ELF (`.move2sp1.abi`) for the runner.
 //!
 //! I/O format: every argument is one SP1 stdin buffer holding its BCS encoding; results are
-//! appended to the public values as BCS, in order. The ABI is JSON:
+//! appended to the public values as BCS, in order, followed by the effects the platform
+//! runtime recorded (Sui: events and transfers, see `runtime/sui/src/effects.rs`). The ABI
+//! is JSON (`effects` lists the types that may appear in effects):
 //!
 //! ```json
 //! { "entry": "pool::swap", "params": ["pool::Pool", "u64"], "returns": [...],
@@ -21,6 +23,7 @@ use serde_json::{Value, json};
 
 use super::{
     FnId, FnInst, Translator,
+    sui::TX_CONTEXT,
     types::{Type, struct_fields, variant_fields},
 };
 
@@ -74,6 +77,14 @@ impl<'ctx> Translator<'ctx, '_> {
                 None,
                 &[self.type_desc(ty)?.into(), slot.into()],
             )?;
+            if ty.canonical(self.prog) == TX_CONTEXT {
+                // Sui: the transaction context natives read comes from this argument
+                self.call_runtime(
+                    "move_rt_sui_tx_init",
+                    None,
+                    &[self.type_desc(ty)?.into(), slot.into()],
+                )?;
+            }
             args.push(
                 self.builder
                     .build_load(self.llvm_type(ty)?, slot, "")?
@@ -104,10 +115,13 @@ impl<'ctx> Translator<'ctx, '_> {
                 &[self.type_desc(ty)?.into(), slot.into()],
             )?;
         }
+        // platform hook (Sui: commit the effects log)
+        self.call_runtime("move_rt_finish", None, &[])?;
         self.builder.build_return(None)?;
 
         let mut types = BTreeMap::new();
-        for ty in params.iter().chain(&returns) {
+        let effect_types = self.effect_types.clone();
+        for ty in params.iter().chain(&returns).chain(&effect_types) {
             self.schema(ty, &mut types)?;
         }
         let names =
@@ -117,7 +131,10 @@ impl<'ctx> Translator<'ctx, '_> {
             names(&params),
             names(&returns),
         );
-        let json = json!({ "entry": name, "params": params, "returns": returns, "types": types });
+        let effects = names(&effect_types);
+        let json = json!({
+            "entry": name, "params": params, "returns": returns, "effects": effects, "types": types,
+        });
         Ok(EntryAbi {
             name,
             params,

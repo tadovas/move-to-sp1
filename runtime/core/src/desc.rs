@@ -114,6 +114,10 @@ impl TypeDesc {
         ];
         KINDS[self.kind as usize]
     }
+    /// Size of the in-memory value in bytes.
+    pub fn size(&self) -> u64 {
+        self.size
+    }
     /// Move type name, e.g. `pool::Pool`.
     pub fn name(&self) -> &str {
         text(self.name, self.name_len)

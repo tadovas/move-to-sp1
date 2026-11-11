@@ -17,11 +17,39 @@ use super::{
 impl<'ctx> Translator<'ctx, '_> {
     pub(super) fn call_native(&mut self, fr: &mut Frame<'ctx>, f: &FnInst) -> Result<()> {
         let name = self.prog.function_name(f.id);
-        if self.prog.module_address(f.id.module) != &AccountAddress::ONE {
-            bail!("native function {name} is not supported");
+        let handled = match *self.prog.module_address(f.id.module) {
+            AccountAddress::ONE => self.std_native(fr, f, &name)?,
+            AccountAddress::TWO => self.sui_native(fr, f, &name)?,
+            _ => false,
+        };
+        if !handled {
+            self.missing_native(fr, f, name)?;
         }
+        Ok(())
+    }
+
+    /// An unsupported native: recorded (reported once translation finishes, so all of them
+    /// are listed at once) and emitted as a trap with placeholder results.
+    fn missing_native(&mut self, fr: &mut Frame<'ctx>, f: &FnInst, name: String) -> Result<()> {
+        self.missing_natives.insert(name);
+        let (params, returns) = self.signature(f)?;
+        fr.pop_n(params.len())?;
+        self.builder.build_unreachable()?;
+        let dead = self
+            .ctx
+            .append_basic_block(self.current_function(), "missing_native");
+        self.builder.position_at_end(dead);
+        for ty in returns {
+            let undef = self.llvm_type(&ty)?.const_zero();
+            fr.push(undef, ty);
+        }
+        Ok(())
+    }
+
+    /// `std` (0x1) natives. Returns false if `name` is not one of them.
+    fn std_native(&mut self, fr: &mut Frame<'ctx>, f: &FnInst, name: &str) -> Result<bool> {
         let t = |i: usize| f.type_args[i].clone();
-        match name.as_str() {
+        match name {
             "vector::empty" => {
                 let v = self.vec_from_values(&t(0), &[])?;
                 fr.push(v, Type::Vector(Box::new(t(0))));
@@ -183,9 +211,9 @@ impl<'ctx> Translator<'ctx, '_> {
                 )?;
                 fr.push(idx.unwrap(), Type::U64);
             }
-            _ => bail!("native function {name} is not supported yet"),
+            _ => return Ok(false),
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Wrap a `vector<u8>` in single-field structs down to `ty` (e.g. `TypeName { name:
@@ -226,7 +254,7 @@ impl<'ctx> Translator<'ctx, '_> {
     }
 
     /// Call a runtime native returning a Rust `bool` (0/1 in a register).
-    fn runtime_bool(
+    pub(super) fn runtime_bool(
         &self,
         name: &str,
         args: &[BasicMetadataValueEnum<'ctx>],

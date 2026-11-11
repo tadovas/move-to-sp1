@@ -6,6 +6,7 @@
 use std::fmt::Write;
 
 pub enum Out {
+    Null,
     Bool(bool),
     /// A JSON number, already formatted.
     Num(String),
@@ -46,6 +47,7 @@ impl Out {
         };
         let inner = indent.map(|d| d + 1);
         match self {
+            Out::Null => out.push_str("null"),
             Out::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
             Out::Num(n) => out.push_str(n),
             Out::Str(s) => out.push_str(&serde_json::to_string(s).unwrap()),

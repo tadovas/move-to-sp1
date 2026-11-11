@@ -108,7 +108,7 @@ fn main() -> Result<()> {
                 data: &obj,
             }];
             let members =
-                link::select_archive_members(&objects, &[("libmove_rt.a", rt)], &["_start"])?;
+                link::select_archive_members(&objects, &[("libmove_rt_sui.a", rt)], &["_start"])?;
             objects.extend(members);
             let notes = [link::NoteSection {
                 name: ".move2sp1.abi".into(),

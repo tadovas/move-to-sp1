@@ -1,6 +1,6 @@
-//! Locates the runtime static library (`libmove_rt.a`) and embeds it into the compiler.
+//! Locates the runtime static library (`libmove_rt_sui.a`) and embeds it into the compiler.
 //!
-//! * `MOVE2SP1_RUNTIME=/path/libmove_rt.a` — use a prebuilt runtime (e.g. a release artifact).
+//! * `MOVE2SP1_RUNTIME=/path/libmove_rt_sui.a` — use a prebuilt runtime (e.g. a release artifact).
 //! * otherwise (dev) — build `../runtime` with the `succinct` toolchain for
 //!   `riscv64im-succinct-zkvm-elf`. This is the only place an external tool is invoked,
 //!   and only at *build* time of move2sp1; the resulting binary is self-contained.
@@ -53,7 +53,7 @@ fn build_runtime() -> PathBuf {
     }
     let status = cmd.status().expect("failed to run cargo for the runtime");
     assert!(status.success(), "building the move2sp1 runtime failed");
-    dir.join("target/riscv64im-succinct-zkvm-elf/release/libmove_rt.a")
+    dir.join("target/riscv64im-succinct-zkvm-elf/release/libmove_rt_sui.a")
 }
 
 /// Generate `$OUT_DIR/frameworks.rs`: one `&[(path, source)]` constant per package in

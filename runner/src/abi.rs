@@ -20,6 +20,8 @@ pub struct Abi {
     pub entry: String,
     pub params: Vec<String>,
     pub returns: Vec<String>,
+    /// Types that may appear in effects (events, transferred objects).
+    pub effects: Vec<String>,
     types: HashMap<String, TypeDef>,
 }
 
@@ -78,6 +80,7 @@ impl Abi {
             entry: j["entry"].as_str().unwrap_or("?").into(),
             params: strings(&j["params"]),
             returns: strings(&j["returns"]),
+            effects: strings(&j["effects"]),
             types,
         })
     }
@@ -104,6 +107,15 @@ impl Abi {
                 let b = bytes_of(v.as_str().unwrap())?;
                 uleb128(b.len() as u64, out);
                 out.extend(b);
+            }
+            _ if ty.starts_with(OPTION) => {
+                // `null` or the value
+                if v.is_null() {
+                    out.push(0);
+                } else {
+                    out.push(1);
+                    self.encode(&ty[OPTION.len()..ty.len() - 1], v, out)?;
+                }
             }
             _ if ty.starts_with("vector<") => {
                 let elem = &ty["vector<".len()..ty.len() - 1];
@@ -145,8 +157,12 @@ impl Abi {
         v: &Value,
         out: &mut Vec<u8>,
     ) -> Result<()> {
-        if let ([(_, ft)], Value::String(_)) = (fs, v) {
-            return self.encode(ft, v, out); // String-like wrapper struct
+        // A single-field wrapper (`UID`, `Balance`, `String`, ...) may be given as its field's
+        // value directly.
+        if let [(name, ft)] = fs
+            && !matches!(v, Value::Object(o) if o.contains_key(name))
+        {
+            return self.encode(ft, v, out);
         }
         for (i, (name, fty)) in fs.iter().enumerate() {
             let fv = match v {
@@ -180,6 +196,10 @@ impl Abi {
                 let n = read_uleb128(input)? as usize;
                 Out::Str(hex(take(input, n)?))
             }
+            _ if ty.starts_with(OPTION) => match read_uleb128(input)? {
+                0 => Out::Null,
+                _ => self.decode(&ty[OPTION.len()..ty.len() - 1], input)?,
+            },
             _ if ty.starts_with("vector<") => {
                 let elem = &ty["vector<".len()..ty.len() - 1];
                 let n = read_uleb128(input)?;
@@ -219,12 +239,54 @@ impl Abi {
                     .unwrap_or_else(|_| hex(b)),
             ));
         }
+        if let [(_, ft)] = fs {
+            return self.decode(ft, input); // single-field wrapper: show its field
+        }
         fs.iter()
             .map(|(name, fty)| Ok((name.clone(), self.decode(fty, input)?)))
             .collect::<Result<_>>()
             .map(Out::Object)
     }
 }
+
+impl Abi {
+    /// Decode the effects committed after the results (see `runtime/sui/src/effects.rs`):
+    /// `vector<(tag, type name, [recipient], bcs value)>`.
+    pub fn decode_effects(&self, input: &mut &[u8]) -> Result<Out> {
+        let n = read_uleb128(input)?;
+        let mut effects = vec![];
+        for _ in 0..n {
+            let tag = take(input, 1)?[0];
+            let len = read_uleb128(input)? as usize;
+            let ty = String::from_utf8(take(input, len)?.to_vec())?;
+            let mut e = vec![(
+                "kind".to_string(),
+                Out::Str(
+                    ["event", "transfer", "share", "freeze"]
+                        .get(tag as usize)
+                        .unwrap_or(&"?")
+                        .to_string(),
+                ),
+            )];
+            e.push(("type".into(), Out::Str(ty.clone())));
+            if tag == 1 {
+                e.push(("recipient".into(), Out::Str(hex(take(input, 32)?))));
+            }
+            let len = read_uleb128(input)? as usize;
+            let mut value = take(input, len)?;
+            let decoded = if self.types.contains_key(&ty) {
+                self.decode(&ty, &mut value)?
+            } else {
+                Out::Str(hex(value))
+            };
+            e.push(("value".into(), decoded));
+            effects.push(Out::Object(e));
+        }
+        Ok(Out::Array(effects))
+    }
+}
+
+const OPTION: &str = "option::Option<";
 
 fn int_width(ty: &str) -> Option<usize> {
     Some(match ty {
