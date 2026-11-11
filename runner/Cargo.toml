@@ -1,0 +1,18 @@
+[package]
+name = "movevm"
+version = "0.1.0"
+edition = "2024"
+description = "Runs move2sp1-compiled RISC-V ELFs in the SP1 zkVM executor (and optionally proves them)"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1"
+object = { version = "0.37", default-features = false, features = ["read", "elf", "std"] }
+num-bigint = "0.4"
+clap = { version = "4", features = ["derive"] }
+sp1-sdk = "6.10.0"
+tokio = { version = "1", features = ["full"] }
+
+# The SP1 executor is unusably slow unoptimized; optimize dependencies even in dev builds.
+[profile.dev.package."*"]
+opt-level = 3

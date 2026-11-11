@@ -1,0 +1,18 @@
+[package]
+name = "move-rt"
+version = "0.1.0"
+edition = "2021"
+description = "Runtime linked into every move2sp1 program: SP1 entrypoint + Move natives"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+sp1-zkvm = "6.10.0"
+
+[profile.release]
+panic = "abort"
+lto = "fat"
+codegen-units = 1
+opt-level = 3

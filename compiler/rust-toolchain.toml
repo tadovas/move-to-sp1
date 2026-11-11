@@ -1,0 +1,3 @@
+[toolchain]
+# Sui's Move crates pin 1.98.x
+channel = "1.98.0"

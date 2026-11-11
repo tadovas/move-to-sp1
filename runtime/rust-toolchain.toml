@@ -1,0 +1,3 @@
+[toolchain]
+# Succinct's toolchain ships the riscv64im-succinct-zkvm-elf target.
+channel = "succinct"
