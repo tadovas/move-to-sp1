@@ -434,7 +434,7 @@ pub fn link(inputs: &[InputObject], notes: &[NoteSection], entry_symbol: &str) -
             }
             elf::R_RISCV_PCREL_LO12_I | elf::R_RISCV_PCREL_LO12_S => {
                 let v = *hi20_at
-                    .get(&(f.value_s as u64))
+                    .get(&f.value_s)
                     .ok_or_else(|| anyhow!("PCREL_LO12 without matching PCREL_HI20"))?;
                 let insn = get32(bytes, o);
                 let insn = if f.r_type == elf::R_RISCV_PCREL_LO12_I {
@@ -555,6 +555,20 @@ fn put64(b: &mut [u8], o: usize, v: u64) {
 
 // ---- ELF writer
 
+/// An ELF64 section header (name resolved to a `.shstrtab` offset when written).
+struct Shdr {
+    name: String,
+    ty: u32,
+    flags: u64,
+    addr: u64,
+    offset: u64,
+    size: u64,
+    link: u32,
+    info: u32,
+    align: u64,
+    entsize: u64,
+}
+
 fn write_elf(
     placed: &[Placed],
     segs: &[(Seg, u64, u64, u64)],
@@ -569,7 +583,7 @@ fn write_elf(
     let mut out = vec![0u8; EHDR + PHDR * segs.len()];
     let mut phdrs = vec![];
     // (name, type, flags, addr, offset, size, link, info, align, entsize)
-    let mut shdrs: Vec<(String, u32, u64, u64, u64, u64, u32, u32, u64, u64)> = vec![];
+    let mut shdrs: Vec<Shdr> = vec![];
 
     for (seg, start, file_end, mem_end) in segs {
         // keep file offset congruent to vaddr modulo page size
@@ -595,50 +609,50 @@ fn write_elf(
             Seg::Rw => (".data", elf::SHF_ALLOC | elf::SHF_WRITE),
         };
         if filesz > 0 {
-            shdrs.push((
-                name.into(),
-                elf::SHT_PROGBITS,
-                sflags as u64,
-                *start,
-                off,
-                filesz,
-                0,
-                0,
-                8,
-                0,
-            ));
+            shdrs.push(Shdr {
+                name: name.into(),
+                ty: elf::SHT_PROGBITS,
+                flags: sflags as u64,
+                addr: *start,
+                offset: off,
+                size: filesz,
+                link: 0,
+                info: 0,
+                align: 8,
+                entsize: 0,
+            });
         }
         if mem_end > file_end {
-            shdrs.push((
-                ".bss".into(),
-                elf::SHT_NOBITS,
-                (elf::SHF_ALLOC | elf::SHF_WRITE) as u64,
-                *file_end,
-                off + filesz,
-                mem_end - file_end,
-                0,
-                0,
-                8,
-                0,
-            ));
+            shdrs.push(Shdr {
+                name: ".bss".into(),
+                ty: elf::SHT_NOBITS,
+                flags: (elf::SHF_ALLOC | elf::SHF_WRITE) as u64,
+                addr: *file_end,
+                offset: off + filesz,
+                size: mem_end - file_end,
+                link: 0,
+                info: 0,
+                align: 8,
+                entsize: 0,
+            });
         }
     }
 
     for n in notes {
         let off = out.len() as u64;
         out.extend_from_slice(&n.data);
-        shdrs.push((
-            n.name.clone(),
-            elf::SHT_PROGBITS,
-            0,
-            0,
-            off,
-            n.data.len() as u64,
-            0,
-            0,
-            1,
-            0,
-        ));
+        shdrs.push(Shdr {
+            name: n.name.clone(),
+            ty: elf::SHT_PROGBITS,
+            flags: 0,
+            addr: 0,
+            offset: off,
+            size: n.data.len() as u64,
+            link: 0,
+            info: 0,
+            align: 1,
+            entsize: 0,
+        });
     }
 
     // symbol table (for disassemblers / SP1 profiling), all symbols global
@@ -661,35 +675,35 @@ fn write_elf(
     let strtab_off = out.len() as u64;
     out.extend_from_slice(&strtab);
     let symtab_index = shdrs.len() as u32 + 1;
-    shdrs.push((
-        ".symtab".into(),
-        elf::SHT_SYMTAB,
-        0,
-        0,
-        symtab_off,
-        symtab.len() as u64,
-        symtab_index + 1,
-        1,
-        8,
-        24,
-    ));
-    shdrs.push((
-        ".strtab".into(),
-        elf::SHT_STRTAB,
-        0,
-        0,
-        strtab_off,
-        strtab.len() as u64,
-        0,
-        0,
-        1,
-        0,
-    ));
+    shdrs.push(Shdr {
+        name: ".symtab".into(),
+        ty: elf::SHT_SYMTAB,
+        flags: 0,
+        addr: 0,
+        offset: symtab_off,
+        size: symtab.len() as u64,
+        link: symtab_index + 1,
+        info: 1,
+        align: 8,
+        entsize: 24,
+    });
+    shdrs.push(Shdr {
+        name: ".strtab".into(),
+        ty: elf::SHT_STRTAB,
+        flags: 0,
+        addr: 0,
+        offset: strtab_off,
+        size: strtab.len() as u64,
+        link: 0,
+        info: 0,
+        align: 1,
+        entsize: 0,
+    });
 
     // section name string table
     let mut shstr = vec![0u8];
     let mut name_offs = vec![];
-    for s in shdrs.iter().map(|s| s.0.as_str()).chain([".shstrtab"]) {
+    for s in shdrs.iter().map(|s| s.name.as_str()).chain([".shstrtab"]) {
         name_offs.push(shstr.len() as u32);
         shstr.extend_from_slice(s.as_bytes());
         shstr.push(0);
@@ -697,23 +711,37 @@ fn write_elf(
     let shstr_off = out.len() as u64;
     out.extend_from_slice(&shstr);
     let shstrndx = shdrs.len() as u16 + 1;
-    shdrs.push((
-        ".shstrtab".into(),
-        elf::SHT_STRTAB,
-        0,
-        0,
-        shstr_off,
-        shstr.len() as u64,
-        0,
-        0,
-        1,
-        0,
-    ));
+    shdrs.push(Shdr {
+        name: ".shstrtab".into(),
+        ty: elf::SHT_STRTAB,
+        flags: 0,
+        addr: 0,
+        offset: shstr_off,
+        size: shstr.len() as u64,
+        link: 0,
+        info: 0,
+        align: 1,
+        entsize: 0,
+    });
 
     let shoff = align_up(out.len() as u64, 8);
     out.resize(shoff as usize, 0);
     out.extend_from_slice(&[0u8; SHDR]); // null section
-    for (i, (_, ty, flags, addr, off, size, link, info, align, entsize)) in shdrs.iter().enumerate()
+    for (
+        i,
+        Shdr {
+            ty,
+            flags,
+            addr,
+            offset: off,
+            size,
+            link,
+            info,
+            align,
+            entsize,
+            ..
+        },
+    ) in shdrs.iter().enumerate()
     {
         let mut h = [0u8; SHDR];
         h[0..4].copy_from_slice(&name_offs[i].to_le_bytes());

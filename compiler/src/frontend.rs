@@ -13,9 +13,9 @@ use move_compiler::{
 };
 use move_symbol_pool::Symbol;
 
-/// Move stdlib sources (copied from Sui's `move-stdlib`, Apache-2.0), embedded so the
-/// binary is self-contained.
-const STDLIB: &[(&str, &str)] = &[];
+// `STDLIB: &[(file name, source)]` — Move stdlib sources embedded by `build.rs`
+// (see `stdlib/README.md`).
+include!(concat!(env!("OUT_DIR"), "/stdlib.rs"));
 
 pub struct Compiled {
     /// Modules from the user's sources.
@@ -59,7 +59,14 @@ pub fn compile(sources: &[PathBuf], addresses: &[(String, String)]) -> Result<Co
     }];
     if !std_paths.is_empty() {
         targets.push(PackagePaths {
-            name: Some(("std".into(), config)),
+            // `is_dependency` silences lints in code the user doesn't own
+            name: Some((
+                "std".into(),
+                PackageConfig {
+                    is_dependency: true,
+                    ..config
+                },
+            )),
             paths: std_paths,
             named_address_map: named,
         });

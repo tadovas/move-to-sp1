@@ -1,7 +1,7 @@
-mod codegen;
 mod frontend;
 mod link;
 mod target;
+mod translate;
 
 use std::path::PathBuf;
 
@@ -73,24 +73,25 @@ fn main() -> Result<()> {
             // 1. Move source -> bytecode
             let compiled = frontend::compile(&sources, &addresses)?;
             let modules: Vec<_> = compiled.targets.iter().chain(&compiled.deps).collect();
-            let prog = codegen::Program { modules };
+            let prog = translate::Program::new(modules);
             let candidates: Vec<usize> = (0..compiled.targets.len()).collect();
             let entry = prog.lookup_entry(&entry, &candidates)?;
 
             // 2. bytecode -> LLVM IR
             let ctx = Context::create();
-            let mut cg = codegen::Codegen::new(&ctx, &prog);
-            let abi = cg.compile(entry)?;
+            let mut translator = translate::Translator::new(&ctx, &prog);
+            let abi = translator.compile(entry)?;
             let tm = target::machine()?;
             if let Some(p) = emit_llvm {
-                target::prepare(&cg.module, &tm);
-                cg.module
+                target::prepare(translator.module(), &tm);
+                translator
+                    .module()
                     .print_to_file(&p)
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
             }
 
             // 3. LLVM IR -> riscv64 object
-            let obj = target::emit_object(&cg.module, &tm, "O2")?;
+            let obj = target::emit_object(translator.module(), &tm, "O2")?;
 
             // 4. link with the runtime into an SP1 ELF
             let rt_owned;
@@ -125,16 +126,8 @@ fn main() -> Result<()> {
                 output.display(),
                 elf.len(),
                 abi.name,
-                abi.params
-                    .iter()
-                    .map(|s| s.name())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                abi.returns
-                    .iter()
-                    .map(|s| s.name())
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                abi.params.join(", "),
+                abi.returns.join(", "),
             );
         }
     }

@@ -54,9 +54,13 @@ pub unsafe extern "C" fn move_rt_alloc(size: u64, align: u64) -> *mut u8 {
     unsafe { alloc::alloc::alloc(layout) }
 }
 
-/// VM-level arithmetic failure (overflow, division by zero, bad shift, lossy cast).
-/// Mirrors Move's `ARITHMETIC_ERROR` status.
+/// VM-level failure, with a Move VM status code (`ARITHMETIC_ERROR`, ...).
 #[unsafe(no_mangle)]
-pub extern "C" fn move_rt_arith_error() -> ! {
-    panic!("Move arithmetic error (ARITHMETIC_ERROR)");
+pub extern "C" fn move_rt_vm_error(status: u64) -> ! {
+    let name = match status {
+        4017 => "ARITHMETIC_ERROR",
+        4018 => "VECTOR_OPERATION_ERROR",
+        _ => "VM_ERROR",
+    };
+    panic!("Move VM error {name} ({status})");
 }
