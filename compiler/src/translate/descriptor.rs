@@ -199,12 +199,17 @@ impl<'ctx> Translator<'ctx, '_> {
 
     /// A private constant string; returns (pointer, length).
     fn const_str(&self, s: &str) -> (PointerValue<'ctx>, u64) {
-        let data = self.ctx.const_string(s.as_bytes(), false);
+        self.const_bytes(s.as_bytes())
+    }
+
+    /// Private constant bytes; returns (pointer, length).
+    pub(super) fn const_bytes(&self, bytes: &[u8]) -> (PointerValue<'ctx>, u64) {
+        let data = self.ctx.const_string(bytes, false);
         let g = self.module.add_global(data.get_type(), None, ".str");
         g.set_initializer(&data);
         g.set_constant(true);
         g.set_linkage(Linkage::Private);
         g.set_unnamed_addr(true);
-        (g.as_pointer_value(), s.len() as u64)
+        (g.as_pointer_value(), bytes.len() as u64)
     }
 }

@@ -68,6 +68,10 @@ typename.move|vector_name||"vector<u64>"
 typename.move|module_of||"typename"
 typename.move|defining||"0x0000000000000000000000000000000000000000000000000000000000000100"
 typename.move|primitive||true
+# object / dynamic-field IDs: expected values from an independent Python implementation of
+# Sui's derive_id / derive_dynamic_field_id (Blake2b-256)
+ids.move|fresh_ids|{"sender":"0xa11ce","tx_hash":"0x0101010101010101010101010101010101010101010101010101010101010101","epoch":0,"epoch_timestamp_ms":0,"ids_created":0} 3|["0x2771b5758043d7b76a6a2b8393e8d8bfad503d88d43551342011ea1fe7aa621c","0xfc707af333d505933028b337c917811383e45f2553b53fea30552662c09973f3","0x705c490fabc0fda31ea664daa1eb9644c4f5e6bb90f0fce1a4ac6c57ceffde75"]
+ids.move|field_id|0x5ca1ab1e 7|"0xf76987acfc721e19d5102abc297821af53dc98193e68f528c005974c76bf47a3"
 amm.move|apply|{"reserve_a":1000000,"reserve_b":500000,"lp_supply":707106,"fee_bps":30} [{"SwapAForB":{"amount_in":10000,"min_out":4900}},{"SwapBForA":{"amount_in":2500,"min_out":0}},{"AddLiquidity":{"amount_a":50000,"amount_b":30000}},{"RemoveLiquidity":{"lp":100000}}]|=model
 amm.move|apply|{"reserve_a":1000000,"reserve_b":500000,"lp_supply":707106,"fee_bps":30} [{"SwapAForB":{"amount_in":10000,"min_out":5000}}]|=model
 amm.move|apply|{"reserve_a":0,"reserve_b":0,"lp_supply":0,"fee_bps":5} [{"AddLiquidity":{"amount_a":4000000,"amount_b":9000000}},{"SwapBForA":{"amount_in":90000,"min_out":39000}}]|=model

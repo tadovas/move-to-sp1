@@ -40,6 +40,10 @@ struct Input {
     /// Use this runtime library instead of the embedded one.
     #[arg(long)]
     runtime: Option<PathBuf>,
+    /// Optimisation: SHA-256 object/dynamic-field IDs (SP1 precompile) instead of Sui's
+    /// Blake2b ones. Unique and deterministic, but not the IDs Sui would assign.
+    #[arg(long)]
+    fast_ids: bool,
 }
 
 #[derive(Subcommand)]
@@ -160,7 +164,14 @@ fn build_elf(
     // bytecode -> LLVM IR
     let ctx = Context::create();
     let tm = target::machine()?;
-    let mut translator = translate::Translator::new(&ctx, &prog, tm.get_target_data());
+    let mut translator = translate::Translator::new(
+        &ctx,
+        &prog,
+        tm.get_target_data(),
+        translate::Options {
+            fast_ids: input.fast_ids,
+        },
+    );
     let abi = translator.compile(entry)?;
     if let Some(p) = emit_llvm {
         target::prepare(translator.module(), &tm);

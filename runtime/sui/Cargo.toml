@@ -13,3 +13,5 @@ crate-type = ["staticlib"]
 move-rt-core.workspace = true
 sp1-zkvm.workspace = true
 sha2.workspace = true
+tiny-keccak.workspace = true
+blake2 = { version = "0.10", default-features = false }

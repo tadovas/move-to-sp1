@@ -1361,6 +1361,7 @@ name = "move2sp1"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bcs",
  "clap",
  "inkwell",
  "move-binary-format",

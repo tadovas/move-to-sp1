@@ -13,7 +13,7 @@ move-rt-core = { path = "core" }
 # allocator (the default, TLSF) only adds cycles.
 sp1-zkvm = { version = "6.10.0", features = ["bump"] }
 sha2 = { version = "0.10.8", default-features = false }
-tiny-keccak = { version = "2.0.2", features = ["sha3"] }
+tiny-keccak = { version = "2.0.2", features = ["sha3", "keccak"] }
 
 [profile.release]
 panic = "abort"

@@ -9,6 +9,11 @@ use std::fmt::Write;
 use anyhow::{Result, anyhow, bail};
 use move_binary_format::file_format::SignatureToken;
 
+use move_core_types::{
+    identifier::Identifier,
+    language_storage::{StructTag, TypeTag},
+};
+
 use super::program::{Datatype, EnumId, ModuleIdx, Program, StructId};
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -162,6 +167,36 @@ impl Type {
             Type::Ref(t) => t.canonical(prog),
             scalar => scalar.display(prog),
         }
+    }
+
+    /// The Move `TypeTag` of this type (as used by Sui to derive dynamic field IDs).
+    pub fn type_tag(&self, prog: &Program) -> Result<TypeTag> {
+        let datatype = |m: ModuleIdx, name: String, args: &[Type]| -> Result<TypeTag> {
+            let cm = prog.module(m);
+            Ok(TypeTag::Struct(Box::new(StructTag {
+                address: *cm.address(),
+                module: cm.name().to_owned(),
+                name: Identifier::new(name.rsplit("::").next().unwrap())?,
+                type_params: args
+                    .iter()
+                    .map(|a| a.type_tag(prog))
+                    .collect::<Result<_>>()?,
+            })))
+        };
+        Ok(match self {
+            Type::Bool => TypeTag::Bool,
+            Type::U8 => TypeTag::U8,
+            Type::U16 => TypeTag::U16,
+            Type::U32 => TypeTag::U32,
+            Type::U64 => TypeTag::U64,
+            Type::U128 => TypeTag::U128,
+            Type::U256 => TypeTag::U256,
+            Type::Address => TypeTag::Address,
+            Type::Vector(e) => TypeTag::Vector(Box::new(e.type_tag(prog)?)),
+            Type::Struct(id, args) => datatype(id.module, prog.struct_name(*id), args)?,
+            Type::Enum(id, args) => datatype(id.module, prog.enum_name(*id), args)?,
+            Type::Ref(_) => bail!("references have no type tag"),
+        })
     }
 
     /// Module defining a struct/enum type.

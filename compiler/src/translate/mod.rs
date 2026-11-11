@@ -57,6 +57,14 @@ pub use entry::EntryAbi;
 pub use program::{FnId, Program};
 pub use types::Type;
 
+/// Translation options. Defaults are faithful to Sui; optimisations are opt-in.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Options {
+    /// Derive object and dynamic-field IDs with SHA-256 (SP1 precompile) instead of Sui's
+    /// Blake2b-256: unique and deterministic, but not equal to the IDs Sui would assign.
+    pub fast_ids: bool,
+}
+
 /// A function instance: a definition plus concrete type arguments.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct FnInst {
@@ -81,10 +89,16 @@ pub struct Translator<'ctx, 'p> {
     struct_types: RefCell<HashMap<Type, StructType<'ctx>>>,
     /// Target layout (sizes/alignments for enum payloads).
     target_data: TargetData,
+    options: Options,
 }
 
 impl<'ctx, 'p> Translator<'ctx, 'p> {
-    pub fn new(ctx: &'ctx Context, prog: &'p Program<'p>, target_data: TargetData) -> Self {
+    pub fn new(
+        ctx: &'ctx Context,
+        prog: &'p Program<'p>,
+        target_data: TargetData,
+        options: Options,
+    ) -> Self {
         Self {
             ctx,
             module: ctx.create_module("move"),
@@ -96,6 +110,7 @@ impl<'ctx, 'p> Translator<'ctx, 'p> {
             effect_types: Vec::new(),
             struct_types: RefCell::default(),
             target_data,
+            options,
         }
     }
 

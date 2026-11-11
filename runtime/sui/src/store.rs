@@ -14,7 +14,6 @@ use move_rt_core::{
     global::Global,
     move_rt_abort,
 };
-use sha2::{Digest, Sha256};
 
 use crate::Address;
 
@@ -45,27 +44,66 @@ fn find(parent: &Address, id: &Address, d: &TypeDesc) -> *mut u8 {
     }
 }
 
-/// `hash_type_and_key<K>(parent, k)`: the child ID for key `k` of type `K`:
-/// `sha256(parent || type name || bcs(k))`.
+/// `hash_type_and_key<K>(parent, k)`: the child ID for key `k`, derived exactly as Sui does
+/// (`derive_dynamic_field_id`): `Blake2b256(0xF0 || parent || len(bcs(k)) as u64 LE || bcs(k) ||
+/// bcs(TypeTag of K))`. The compiler supplies `bcs(TypeTag)` as a constant.
 ///
 /// # Safety
-/// `k` points to an initialized value of type `kd`.
+/// `k` points to an initialized value of type `kd`; `tag` points to `tag_len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn move_rt_sui_df_hash(
     parent: &Address,
     kd: &TypeDesc,
     k: *const u8,
+    tag: *const u8,
+    tag_len: u64,
     out: &mut Address,
 ) {
     // SAFETY: guaranteed by the caller.
-    let key = unsafe { Value::new(kd, k) };
+    *out = unsafe { field_id(false, parent, kd, k, tag, tag_len) };
+}
+
+/// `--fast-ids`: the same derivation with SHA-256 (SP1 precompile) instead of Blake2b.
+///
+/// # Safety
+/// As for `move_rt_sui_df_hash`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn move_rt_sui_df_hash_fast(
+    parent: &Address,
+    kd: &TypeDesc,
+    k: *const u8,
+    tag: *const u8,
+    tag_len: u64,
+    out: &mut Address,
+) {
+    // SAFETY: guaranteed by the caller.
+    *out = unsafe { field_id(true, parent, kd, k, tag, tag_len) };
+}
+
+/// # Safety
+/// `k` points to an initialized value of type `kd`; `tag` points to `tag_len` bytes.
+unsafe fn field_id(
+    fast: bool,
+    parent: &Address,
+    kd: &TypeDesc,
+    k: *const u8,
+    tag: *const u8,
+    tag_len: u64,
+) -> Address {
+    // SAFETY: guaranteed by the caller.
+    let (key, tag) = unsafe {
+        (
+            Value::new(kd, k),
+            core::slice::from_raw_parts(tag, tag_len as usize),
+        )
+    };
     let mut key_bcs = Vec::new();
     bcs::encode(key, &mut key_bcs);
-    let mut h = Sha256::new();
-    h.update(parent);
-    h.update(kd.name().as_bytes());
-    h.update(&key_bcs);
-    *out = h.finalize().into();
+    let len = (key_bcs.len() as u64).to_le_bytes();
+    crate::hash::id_hash(
+        fast,
+        &[&[crate::hash::CHILD_OBJECT_ID], parent, &len, &key_bcs, tag],
+    )
 }
 
 /// `add_child_object<Child>(parent, child)`. The child's ID is its leading `UID`.

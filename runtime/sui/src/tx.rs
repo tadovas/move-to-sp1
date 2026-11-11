@@ -6,7 +6,6 @@ use move_rt_core::{
     desc::{TypeDesc, Value, VecHeader},
     global::Global,
 };
-use sha2::{Digest, Sha256};
 
 use crate::Address;
 
@@ -80,17 +79,29 @@ pub extern "C" fn move_rt_sui_ids_created() -> u64 {
     TX.with(|tx| tx.ids_created)
 }
 
-/// A fresh object ID: `sha256(tx_hash || ids_created)` (deterministic per transaction; Sui
-/// itself uses a Blake2b-based derivation, so IDs differ from on-chain ones).
+/// A fresh object ID, derived exactly as Sui does (`ObjectID::derive_id`):
+/// `Blake2b256(0xF1 || tx_digest || ids_created as u64 LE)`.
 #[unsafe(no_mangle)]
 pub extern "C" fn move_rt_sui_fresh_id(out: &mut Address) {
-    *out = TX.with(|tx| {
-        let mut h = Sha256::new();
-        h.update(&tx.tx_hash);
-        h.update(tx.ids_created.to_le_bytes());
+    *out = fresh_id(false);
+}
+
+/// `--fast-ids`: the same derivation with SHA-256 (SP1 precompile) instead of Blake2b.
+#[unsafe(no_mangle)]
+pub extern "C" fn move_rt_sui_fresh_id_fast(out: &mut Address) {
+    *out = fresh_id(true);
+}
+
+fn fresh_id(fast: bool) -> Address {
+    TX.with(|tx| {
+        let counter = tx.ids_created.to_le_bytes();
+        let id = crate::hash::id_hash(
+            fast,
+            &[&[crate::hash::REGULAR_OBJECT_ID], &tx.tx_hash, &counter],
+        );
         tx.ids_created += 1;
-        h.finalize().into()
-    });
+        id
+    })
 }
 
 #[unsafe(no_mangle)]

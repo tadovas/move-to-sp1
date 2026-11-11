@@ -7,6 +7,7 @@
 //! * `store`   — child objects of dynamic fields (what `Table`, `Bag`, ... are built on) and
 //!               shared objects (taken and returned with `sui::test_scenario`)
 //! * `clock`   — the `Clock` singleton
+//! * `hash`    — Sui's hashing (Blake2b-256 IDs) and `sui::hash` natives
 //! * `effects` — events, transfers, shares and freezes, committed after the results
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -18,6 +19,7 @@ pub use move_rt_core;
 
 mod clock;
 mod effects;
+mod hash;
 mod store;
 mod tx;
 

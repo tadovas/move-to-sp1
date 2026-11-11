@@ -30,7 +30,7 @@ impl<'ctx> Translator<'ctx, '_> {
                 fr.push(a, Type::Address);
             }
             "tx_context::fresh_id" => {
-                let a = self.address_from_runtime("move_rt_sui_fresh_id", vec![])?;
+                let a = self.address_from_runtime(self.id_fn("move_rt_sui_fresh_id"), vec![])?;
                 fr.push(a, Type::Address);
             }
             "tx_context::native_epoch"
@@ -84,12 +84,18 @@ impl<'ctx> Translator<'ctx, '_> {
             "dynamic_field::hash_type_and_key" => {
                 let (key, _) = fr.pop()?;
                 let (parent, _) = fr.pop()?;
+                // Sui hashes the key's BCS type tag; the key type is known here, so its
+                // encoding is a constant.
+                let tag = bcs::to_bytes(&t(0).type_tag(self.prog)?)?;
+                let (tag_ptr, tag_len) = self.const_bytes(&tag);
                 let args = vec![
                     self.spill(parent)?.into(),
                     self.type_desc(&t(0))?.into(),
                     self.spill(key)?.into(),
+                    tag_ptr.into(),
+                    i64t.const_int(tag_len, false).into(),
                 ];
-                let id = self.address_from_runtime("move_rt_sui_df_hash", args)?;
+                let id = self.address_from_runtime(self.id_fn("move_rt_sui_df_hash"), args)?;
                 fr.push(id, Type::Address);
             }
             "dynamic_field::add_child_object" => {
@@ -253,6 +259,18 @@ impl<'ctx> Translator<'ctx, '_> {
                 fr.push(empty, returns[0].clone());
             }
 
+            // ---- hashing
+            "hash::blake2b256" | "hash::keccak256" => {
+                let (data, _) = fr.pop()?; // &vector<u8>
+                let rt = if name.ends_with("blake2b256") {
+                    "move_rt_sui_blake2b256"
+                } else {
+                    "move_rt_sui_keccak256"
+                };
+                let digest = self.runtime_bytes(rt, vec![data.into()])?;
+                fr.push(digest, Type::Vector(Box::new(Type::U8)));
+            }
+
             // ---- types / address
             "types::is_one_time_witness" => {
                 fr.pop()?;
@@ -340,6 +358,15 @@ impl<'ctx> Translator<'ctx, '_> {
             )
             .ok_or_else(|| anyhow::anyhow!("sui::clock::Clock not loaded"))?;
         Ok(Type::Struct(id, vec![]))
+    }
+
+    /// The ID-deriving runtime function: Sui's derivation, or its `--fast-ids` variant.
+    fn id_fn(&self, exact: &'static str) -> &'static str {
+        match (self.options.fast_ids, exact) {
+            (false, _) => exact,
+            (true, "move_rt_sui_fresh_id") => "move_rt_sui_fresh_id_fast",
+            (true, _) => "move_rt_sui_df_hash_fast",
+        }
     }
 
     /// Call a runtime function that writes an address to a trailing out-pointer.

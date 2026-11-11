@@ -242,7 +242,7 @@ impl<'ctx> Translator<'ctx, '_> {
     }
 
     /// Call a runtime native that produces a `vector<u8>` through a trailing out-pointer.
-    fn runtime_bytes(
+    pub(super) fn runtime_bytes(
         &self,
         name: &str,
         mut args: Vec<BasicMetadataValueEnum<'ctx>>,
