@@ -21,10 +21,27 @@ use move_symbol_pool::Symbol;
 // `MOVE_STDLIB`, `SUI_FRAMEWORK`: `&[(relative path, source)]`, embedded by `build.rs`.
 include!(concat!(env!("OUT_DIR"), "/frameworks.rs"));
 
-/// Embedded framework packages: (package name, named address, address, sources).
-const FRAMEWORKS: &[(&str, &str, &str, &[(&str, &str)])] = &[
-    ("MoveStdlib", "std", "0x1", MOVE_STDLIB),
-    ("Sui", "sui", "0x2", SUI_FRAMEWORK),
+/// An embedded framework package.
+struct Framework {
+    package: &'static str,
+    named_address: &'static str,
+    address: &'static str,
+    sources: &'static [(&'static str, &'static str)],
+}
+
+const FRAMEWORKS: &[Framework] = &[
+    Framework {
+        package: "MoveStdlib",
+        named_address: "std",
+        address: "0x1",
+        sources: MOVE_STDLIB,
+    },
+    Framework {
+        package: "Sui",
+        named_address: "sui",
+        address: "0x2",
+        sources: SUI_FRAMEWORK,
+    },
 ];
 
 const USER_PACKAGE: &str = "main";
@@ -39,7 +56,12 @@ pub struct Compiled {
 pub fn compile(sources: &[PathBuf], addresses: &[(String, String)]) -> Result<Compiled> {
     let mut named: BTreeMap<Symbol, NumericalAddress> = FRAMEWORKS
         .iter()
-        .map(|(_, name, addr, _)| ((*name).into(), NumericalAddress::parse_str(addr).unwrap()))
+        .map(|f| {
+            (
+                f.named_address.into(),
+                NumericalAddress::parse_str(f.address).unwrap(),
+            )
+        })
         .collect();
     for (name, addr) in addresses {
         let a = NumericalAddress::parse_str(addr)
@@ -66,10 +88,10 @@ pub fn compile(sources: &[PathBuf], addresses: &[(String, String)]) -> Result<Co
 
     // The compiler reads files from disk: materialize the embedded sources in a scratch dir.
     let scratch = ScratchDir::new()?;
-    for (pkg, _, _, files) in FRAMEWORKS {
+    for fw in FRAMEWORKS {
         let mut paths = vec![];
-        for (rel, src) in *files {
-            let p = scratch.0.join(pkg).join(rel);
+        for (rel, src) in fw.sources {
+            let p = scratch.0.join(fw.package).join(rel);
             std::fs::create_dir_all(p.parent().unwrap())?;
             std::fs::write(&p, src)?;
             paths.push(p);
@@ -77,7 +99,7 @@ pub fn compile(sources: &[PathBuf], addresses: &[(String, String)]) -> Result<Co
         packages.push(PackagePaths {
             // `is_dependency` silences lints in code the user doesn't own
             name: Some((
-                (*pkg).into(),
+                fw.package.into(),
                 PackageConfig {
                     is_dependency: true,
                     ..config.clone()
