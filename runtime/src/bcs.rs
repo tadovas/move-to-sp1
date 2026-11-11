@@ -1,97 +1,59 @@
-//! BCS (Binary Canonical Serialization) of in-memory Move values, driven by type
-//! descriptors. Used for entry arguments/results and `std::bcs::to_bytes`.
+//! BCS (Binary Canonical Serialization) of Move values, driven by type descriptors.
+//! Used for entry arguments/results and `std::bcs::to_bytes`.
 //!
 //! bool: 1 byte; integers: little-endian; address: 32 bytes; vector: ULEB128 length +
 //! elements; struct: fields in order; enum: ULEB128 variant tag + variant fields.
 
 use alloc::vec::Vec;
 
-use crate::desc::{self, TypeDesc, VecHeader};
+use crate::desc::{Kind, Slot, Value};
 
-pub unsafe fn encode(d: &TypeDesc, p: *const u8, out: &mut Vec<u8>) {
-    match d.kind {
-        desc::VECTOR => {
-            let v = unsafe { &*(p as *const VecHeader) };
-            uleb128(v.len, out);
-            let e = d.elem();
-            for i in 0..v.len {
-                unsafe { encode(e, v.data.add((i * e.size) as usize), out) };
-            }
+pub fn encode(v: Value, out: &mut Vec<u8>) {
+    match v.desc().kind() {
+        Kind::Vector => {
+            let elems = v.elems();
+            uleb128(elems.len() as u64, out);
+            elems.for_each(|e| encode(e, out));
         }
-        desc::STRUCT => {
-            for f in d.fields() {
-                unsafe { encode(f.ty(), p.add(f.offset as usize), out) };
-            }
-        }
-        desc::ENUM => {
-            let tag = unsafe { *(p as *const u16) };
+        Kind::Struct => v.fields().for_each(|(_, f)| encode(f, out)),
+        Kind::Enum => {
+            let (tag, _, fields) = v.variant();
             uleb128(tag as u64, out);
-            let payload = unsafe { p.add(d.payload_offset as usize) };
-            for f in d.variants()[tag as usize].fields() {
-                unsafe { encode(f.ty(), payload.add(f.offset as usize), out) };
-            }
+            fields.for_each(|(_, f)| encode(f, out));
         }
-        _ => out.extend_from_slice(unsafe { core::slice::from_raw_parts(p, wire_size(d)) }),
+        _ => out.extend_from_slice(v.prim_bytes()),
     }
 }
 
-pub unsafe fn decode(d: &TypeDesc, input: &mut &[u8], p: *mut u8) -> Result<(), &'static str> {
-    match d.kind {
-        desc::VECTOR => {
+pub fn decode(slot: Slot, input: &mut &[u8]) -> Result<(), &'static str> {
+    match slot.desc().kind() {
+        Kind::Vector => {
             let n = read_uleb128(input)?;
-            let e = d.elem();
-            let data = desc::alloc((n * e.size) as usize);
-            for i in 0..n {
-                unsafe { decode(e, input, data.add((i * e.size) as usize))? };
-            }
-            unsafe {
-                (p as *mut VecHeader).write(VecHeader {
-                    data,
-                    len: n,
-                    cap: n,
-                })
-            };
-        }
-        desc::STRUCT => {
-            for f in d.fields() {
-                unsafe { decode(f.ty(), input, p.add(f.offset as usize))? };
+            for e in slot.init_vector(n as usize) {
+                decode(e, input)?;
             }
         }
-        desc::ENUM => {
-            let tag = read_uleb128(input)?;
-            let variant = d
-                .variants()
-                .get(tag as usize)
-                .ok_or("invalid enum variant tag")?;
-            unsafe { (p as *mut u16).write(tag as u16) };
-            let payload = unsafe { p.add(d.payload_offset as usize) };
-            for f in variant.fields() {
-                unsafe { decode(f.ty(), input, payload.add(f.offset as usize))? };
+        Kind::Struct => {
+            for f in slot.fields() {
+                decode(f, input)?;
             }
         }
-        _ => {
-            let n = wire_size(d);
-            let bytes = take(input, n)?;
-            if d.kind == desc::BOOL && bytes[0] > 1 {
+        Kind::Enum => {
+            let tag =
+                u16::try_from(read_uleb128(input)?).map_err(|_| "invalid enum variant tag")?;
+            for f in slot.init_variant(tag).ok_or("invalid enum variant tag")? {
+                decode(f, input)?;
+            }
+        }
+        kind => {
+            let bytes = take(input, kind.prim_size().unwrap())?;
+            if kind == Kind::Bool && bytes[0] > 1 {
                 return Err("invalid bool");
             }
-            unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), p, n) };
+            slot.write_prim(bytes);
         }
     }
     Ok(())
-}
-
-/// Encoded size of a primitive.
-fn wire_size(d: &TypeDesc) -> usize {
-    match d.kind {
-        desc::BOOL | desc::U8 => 1,
-        desc::U16 => 2,
-        desc::U32 => 4,
-        desc::U64 => 8,
-        desc::U128 => 16,
-        desc::U256 | desc::ADDRESS => 32,
-        _ => unreachable!("not a primitive"),
-    }
 }
 
 fn uleb128(mut v: u64, out: &mut Vec<u8>) {
@@ -125,11 +87,4 @@ fn take<'a>(input: &mut &'a [u8], n: usize) -> Result<&'a [u8], &'static str> {
     let (h, t) = input.split_at(n);
     *input = t;
     Ok(h)
-}
-
-/// `VecHeader` of the BCS bytes of a value (for `std::bcs::to_bytes`).
-pub unsafe fn to_bytes(d: &TypeDesc, p: *const u8) -> VecHeader {
-    let mut out = Vec::new();
-    unsafe { encode(d, p, &mut out) };
-    VecHeader::from_bytes(&out)
 }

@@ -11,6 +11,7 @@
 //! * `natives` — Move native functions implemented here (bcs, debug, hash, string)
 #![no_std]
 #![no_main]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 extern crate alloc;
 
@@ -21,7 +22,7 @@ mod print;
 
 use alloc::vec::Vec;
 
-use desc::TypeDesc;
+use desc::{Slot, TypeDesc, Value};
 
 sp1_zkvm::entrypoint!(main);
 
@@ -34,12 +35,17 @@ fn main() {
     unsafe { __move_entry() }
 }
 
-/// Decode the next SP1 stdin buffer (BCS) into the value at `out`.
+/// Decode the next SP1 stdin buffer (BCS) into the value slot at `out`.
+///
+/// # Safety
+/// `out` is valid for writes of a value of type `d` (generated code passes an `alloca`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn move_rt_read_value(d: &TypeDesc, out: *mut u8) {
+    // SAFETY: guaranteed by the caller.
+    let slot = unsafe { Slot::new(d, out) };
     let buf: Vec<u8> = sp1_zkvm::io::read_vec();
     let mut input = buf.as_slice();
-    if let Err(e) = unsafe { bcs::decode(d, &mut input, out) } {
+    if let Err(e) = bcs::decode(slot, &mut input) {
         panic!("bad argument of type {}: {e}", d.name());
     }
     if !input.is_empty() {
@@ -52,10 +58,15 @@ pub unsafe extern "C" fn move_rt_read_value(d: &TypeDesc, out: *mut u8) {
 }
 
 /// Append the BCS encoding of the value at `p` to the public values.
+///
+/// # Safety
+/// `p` points to an initialized value of type `d`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn move_rt_commit_value(d: &TypeDesc, p: *const u8) {
+    // SAFETY: guaranteed by the caller.
+    let v = unsafe { Value::new(d, p) };
     let mut out = Vec::new();
-    unsafe { bcs::encode(d, p, &mut out) };
+    bcs::encode(v, &mut out);
     sp1_zkvm::io::commit_slice(&out);
 }
 
