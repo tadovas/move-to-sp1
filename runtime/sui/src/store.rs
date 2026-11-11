@@ -171,8 +171,9 @@ pub extern "C" fn move_rt_sui_df_has(parent: &Address, id: &Address, d: *const T
 // ---- object inventory (for `sui::test_scenario`)
 //
 // Objects transferred to an account or shared during the run are kept here so later
-// "transactions" of a test scenario can take them back. (Simplification: they are available
-// immediately, not only after `next_tx`.)
+// "transactions" of a test scenario can take them back. As on Sui, objects placed during a
+// transaction are pending until it ends (`test_scenario::end_transaction`, called by
+// `next_tx` / `end`); only then can they be taken.
 
 // Abort code of `sui::test_scenario` when an object is not available.
 const E_OBJECT_NOT_FOUND: u64 = 3;
@@ -186,6 +187,8 @@ struct Owned {
     data: *mut u8,
     /// Insertion order, for "most recent".
     seq: u64,
+    /// Placed during the current transaction: not takeable until it ends.
+    pending: bool,
 }
 
 struct Inventory {
@@ -229,6 +232,7 @@ pub(crate) unsafe fn put(owner: Owner, d: &TypeDesc, p: *const u8) {
                 desc: d,
                 data,
                 seq,
+                pending: true,
             },
         );
     });
@@ -251,7 +255,7 @@ pub unsafe extern "C" fn move_rt_sui_take(
         let matches = inv
             .objects
             .get(id)
-            .is_some_and(|o| o.owner == owner && ptr::eq(o.desc, d));
+            .is_some_and(|o| !o.pending && o.owner == owner && ptr::eq(o.desc, d));
         let obj = if matches {
             inv.objects.remove(id)
         } else {
@@ -293,7 +297,7 @@ pub unsafe extern "C" fn move_rt_sui_most_recent(
     let found = INVENTORY.with(|inv| {
         inv.objects
             .iter()
-            .filter(|(_, o)| o.owner == owner && ptr::eq(o.desc, d))
+            .filter(|(_, o)| !o.pending && o.owner == owner && ptr::eq(o.desc, d))
             .max_by_key(|(_, o)| o.seq)
             .map(|(id, _)| *id)
     });
@@ -307,4 +311,14 @@ pub unsafe extern "C" fn move_rt_sui_most_recent(
         }
         id_slot.write_prim(&found.unwrap());
     }
+}
+
+/// `test_scenario::end_transaction`: objects placed during the transaction become available,
+/// and the record of objects taken in it is cleared.
+#[unsafe(no_mangle)]
+pub extern "C" fn move_rt_sui_end_transaction() {
+    INVENTORY.with(|inv| {
+        inv.objects.values_mut().for_each(|o| o.pending = false);
+        inv.taken.clear();
+    });
 }

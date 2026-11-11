@@ -254,6 +254,7 @@ impl<'ctx> Translator<'ctx, '_> {
             "test_scenario::end_transaction" => {
                 // effects summaries are not tracked: an empty `TransactionEffects` (all-zero
                 // memory is a valid value: empty vectors and maps, zero counts)
+                self.call_runtime("move_rt_sui_end_transaction", None, &[])?;
                 let (_, returns) = self.signature(f)?;
                 let empty = self.llvm_type(&returns[0])?.const_zero();
                 fr.push(empty, returns[0].clone());
