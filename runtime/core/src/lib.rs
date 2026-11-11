@@ -75,10 +75,24 @@ pub unsafe extern "C" fn move_rt_commit_value(d: &TypeDesc, p: *const u8) {
     sp1_zkvm::io::commit_slice(&out);
 }
 
+/// Failure record committed to the public values when the program aborts, so runners (and
+/// proofs) can tell how it failed: `"MOVEABRT" || kind (0 = abort, 1 = VM error) || code (u64 LE)`.
+pub const ABORT_MAGIC: &[u8; 8] = b"MOVEABRT";
+
+fn fail(kind: u8, code: u64, message: core::fmt::Arguments) -> ! {
+    let text = alloc::format!("{message}\n");
+    sp1_zkvm::syscalls::syscall_write(2, text.as_ptr(), text.len());
+    let mut record = ABORT_MAGIC.to_vec();
+    record.push(kind);
+    record.extend_from_slice(&code.to_le_bytes());
+    sp1_zkvm::io::commit_slice(&record);
+    sp1_zkvm::syscalls::syscall_halt(1)
+}
+
 /// Move `abort <code>`.
 #[unsafe(no_mangle)]
 pub extern "C" fn move_rt_abort(code: u64) -> ! {
-    panic!("Move abort with code {code}");
+    fail(0, code, format_args!("Move abort with code {code}"))
 }
 
 /// VM-level failure, with a Move VM status code (`ARITHMETIC_ERROR`, ...).
@@ -90,7 +104,7 @@ pub extern "C" fn move_rt_vm_error(status: u64) -> ! {
         4030 => "VARIANT_TAG_MISMATCH",
         _ => "VM_ERROR",
     };
-    panic!("Move VM error {name} ({status})");
+    fail(1, status, format_args!("Move VM error {name} ({status})"))
 }
 
 /// Heap memory for generated code (16-byte aligned, never freed).

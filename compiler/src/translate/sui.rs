@@ -193,24 +193,57 @@ impl<'ctx> Translator<'ctx, '_> {
             }
 
             // ---- test_scenario: shared objects across transactions
-            "test_scenario::take_shared_by_id" => {
+            // `owner` below: null for shared objects, else a pointer to the account address
+            "test_scenario::take_shared_by_id" | "test_scenario::take_from_address_by_id" => {
                 let (id, _) = fr.pop()?;
+                let owner = if name.ends_with("shared_by_id") {
+                    self.ptr_type().const_null()
+                } else {
+                    self.spill(fr.pop()?.0)?
+                };
                 fr.pop()?; // &Scenario
                 let lty = self.llvm_type(&t(0))?;
-                let out = self.builder.build_alloca(lty, "shared")?;
+                let out = self.builder.build_alloca(lty, "taken")?;
                 let args = [
+                    owner.into(),
                     self.spill(id)?.into(),
                     self.type_desc(&t(0))?.into(),
                     out.into(),
                 ];
-                self.call_runtime("move_rt_sui_take_shared", None, &args)?;
+                self.call_runtime("move_rt_sui_take", None, &args)?;
                 fr.push(self.builder.build_load(lty, out, "")?, t(0));
             }
-            "test_scenario::was_taken_shared" => {
+            "test_scenario::was_taken_shared" | "test_scenario::was_taken_from_address" => {
                 let (id, _) = fr.pop()?;
-                let taken =
-                    self.runtime_bool("move_rt_sui_was_taken_shared", &[self.spill(id)?.into()])?;
+                let owner = if name.ends_with("shared") {
+                    self.ptr_type().const_null()
+                } else {
+                    self.spill(fr.pop()?.0)?
+                };
+                let taken = self.runtime_bool(
+                    "move_rt_sui_was_taken",
+                    &[owner.into(), self.spill(id)?.into()],
+                )?;
                 fr.push(taken, Type::Bool);
+            }
+            "test_scenario::most_recent_id_shared"
+            | "test_scenario::most_recent_id_for_address" => {
+                let owner = if name.ends_with("shared") {
+                    self.ptr_type().const_null()
+                } else {
+                    self.spill(fr.pop()?.0)?
+                };
+                let (_, returns) = self.signature(f)?; // Option<ID>
+                let lty = self.llvm_type(&returns[0])?;
+                let out = self.builder.build_alloca(lty, "most_recent")?;
+                let args = [
+                    owner.into(),
+                    self.type_desc(&t(0))?.into(),
+                    self.type_desc(&returns[0])?.into(),
+                    out.into(),
+                ];
+                self.call_runtime("move_rt_sui_most_recent", None, &args)?;
+                fr.push(self.builder.build_load(lty, out, "")?, returns[0].clone());
             }
             "test_scenario::end_transaction" => {
                 // effects summaries are not tracked: an empty `TransactionEffects` (all-zero
@@ -220,9 +253,81 @@ impl<'ctx> Translator<'ctx, '_> {
                 fr.push(empty, returns[0].clone());
             }
 
+            // ---- types / address
+            "types::is_one_time_witness" => {
+                fr.pop()?;
+                let is_otw = self
+                    .ctx
+                    .bool_type()
+                    .const_int(self.is_one_time_witness(&t(0)) as u64, false);
+                fr.push(is_otw, Type::Bool);
+            }
+            // addresses are held as their 32 bytes in memory order; as a u256 they read big-endian
+            "address::to_u256" | "address::from_u256" => {
+                let (v, _) = fr.pop()?;
+                let bswap = inkwell::intrinsics::Intrinsic::find("llvm.bswap").unwrap();
+                let decl = bswap
+                    .get_declaration(&self.module, &[self.int_type(256).into()])
+                    .unwrap();
+                let swapped = self
+                    .builder
+                    .build_call(decl, &[v.into()], "")?
+                    .try_as_basic_value()
+                    .basic()
+                    .unwrap();
+                fr.push(
+                    swapped,
+                    if name.ends_with("to_u256") {
+                        Type::U256
+                    } else {
+                        Type::Address
+                    },
+                );
+            }
+            "address::from_bytes" => {
+                let (v, _) = fr.pop()?;
+                let (data, len) = self.vec_parts(v.into_struct_value())?;
+                let bad = self.builder.build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    len,
+                    i64t.const_int(32, false),
+                    "",
+                )?;
+                // `sui::address::EAddressParseError` = 0
+                let ok = self.ctx.append_basic_block(self.current_function(), "ok");
+                let abort = self
+                    .ctx
+                    .append_basic_block(self.current_function(), "bad_address");
+                self.builder.build_conditional_branch(bad, abort, ok)?;
+                self.builder.position_at_end(abort);
+                self.abort(i64t.const_zero())?;
+                self.builder.position_at_end(ok);
+                let a = self.builder.build_load(self.int_type(256), data, "")?;
+                fr.push(a, Type::Address);
+            }
+
             _ => return Ok(false),
         }
         Ok(true)
+    }
+
+    /// Sui's one-time-witness rule: a struct named after its module in upper case, with only
+    /// the `drop` ability, no type parameters and a single `bool` field.
+    fn is_one_time_witness(&self, ty: &Type) -> bool {
+        let Type::Struct(id, args) = ty else {
+            return false;
+        };
+        let cm = self.prog.module(id.module);
+        let handle = cm.datatype_handle_at(cm.struct_def_at(id.def).struct_handle);
+        let only_drop = handle.abilities
+            == move_binary_format::file_format::AbilitySet::EMPTY
+                | move_binary_format::file_format::Ability::Drop;
+        let name = cm.identifier_at(handle.name).as_str();
+        let fields = super::types::struct_fields(self.prog, *id, args).unwrap_or_default();
+        args.is_empty()
+            && only_drop
+            && name == cm.name().as_str().to_uppercase()
+            && fields == [Type::Bool]
     }
 
     fn clock_type(&self) -> Result<Type> {

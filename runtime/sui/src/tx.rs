@@ -27,9 +27,10 @@ static TX: Global<TxState> = Global::new(TxState {
     epoch: 0,
     epoch_timestamp_ms: 0,
     ids_created: 0,
-    rgp: 1_000,
-    gas_price: 1_000,
-    gas_budget: 50_000_000_000,
+    // as in Sui's unit-test runner (`sui-move/src/unit_test.rs`)
+    rgp: 0,
+    gas_price: 0,
+    gas_budget: 0,
 });
 
 fn u64_of(v: Value) -> u64 {

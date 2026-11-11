@@ -10,7 +10,7 @@ use core::ptr;
 
 use move_rt_core::{
     bcs,
-    desc::{self, TypeDesc, Value},
+    desc::{self, Kind, Slot, TypeDesc, Value},
     global::Global,
     move_rt_abort,
 };
@@ -128,46 +128,96 @@ pub extern "C" fn move_rt_sui_df_has(parent: &Address, id: &Address, d: *const T
     })
 }
 
-// ---- shared objects (for `sui::test_scenario`)
+// ---- object inventory (for `sui::test_scenario`)
+//
+// Objects transferred to an account or shared during the run are kept here so later
+// "transactions" of a test scenario can take them back. (Simplification: they are available
+// immediately, not only after `next_tx`.)
 
 // Abort code of `sui::test_scenario` when an object is not available.
 const E_OBJECT_NOT_FOUND: u64 = 3;
 
-struct Shared {
+/// Owner of an inventory object: an account, or `None` for shared.
+type Owner = Option<Address>;
+
+struct Owned {
+    owner: Owner,
     desc: *const TypeDesc,
     data: *mut u8,
+    /// Insertion order, for "most recent".
+    seq: u64,
 }
 
-/// Shared objects not currently taken, and the IDs of those taken.
-static SHARED: Global<(BTreeMap<Address, Shared>, BTreeMap<Address, ()>)> =
-    Global::new((BTreeMap::new(), BTreeMap::new()));
+struct Inventory {
+    objects: BTreeMap<Address, Owned>,
+    /// Objects taken out, by ID, with the owner they were taken from.
+    taken: BTreeMap<Address, Owner>,
+    next_seq: u64,
+}
 
-/// Store a just-shared object (moved bitwise; its ID is its leading `UID`).
+static INVENTORY: Global<Inventory> = Global::new(Inventory {
+    objects: BTreeMap::new(),
+    taken: BTreeMap::new(),
+    next_seq: 0,
+});
+
+/// `owner` argument of the natives below: null for shared objects, else the account.
+fn owner_of(account: *const Address) -> Owner {
+    // SAFETY: non-null `account` points to a 32-byte address (generated code passes `&address`).
+    (!account.is_null()).then(|| unsafe { *account })
+}
+
+/// Store a transferred / shared object (moved bitwise; its ID is its leading `UID`).
 ///
 /// # Safety
 /// `p` points to an initialized object of type `d`.
-pub(crate) unsafe fn put_shared(d: &TypeDesc, p: *const u8) {
+pub(crate) unsafe fn put(owner: Owner, d: &TypeDesc, p: *const u8) {
     let size = d.size() as usize;
     let data = desc::alloc(size);
     // SAFETY: `p` holds `size` initialized bytes; `data` is a fresh allocation of `size`.
     unsafe { ptr::copy_nonoverlapping(p, data, size) };
     // SAFETY: objects start with `id: UID`, i.e. their 32-byte address.
     let id: Address = unsafe { *(data as *const Address) };
-    SHARED.with(|(available, taken)| {
-        taken.remove(&id);
-        available.insert(id, Shared { desc: d, data });
+    INVENTORY.with(|inv| {
+        inv.taken.remove(&id);
+        let seq = inv.next_seq;
+        inv.next_seq += 1;
+        inv.objects.insert(
+            id,
+            Owned {
+                owner,
+                desc: d,
+                data,
+                seq,
+            },
+        );
     });
 }
 
-/// `test_scenario::take_shared_by_id<T>(id)`: moves the shared object into `out`.
+/// `take_shared_by_id<T>(id)` (`account` null) / `take_from_address_by_id<T>(account, id)`:
+/// moves the object into `out`.
 ///
 /// # Safety
-/// `out` is valid for writes of a value of type `d`.
+/// `out` is valid for writes of a value of type `d`; `account` is null or a valid address.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn move_rt_sui_take_shared(id: &Address, d: &TypeDesc, out: *mut u8) {
-    let obj = SHARED.with(|(available, taken)| {
-        let obj = available.remove(id).filter(|o| ptr::eq(o.desc, d))?;
-        taken.insert(*id, ());
+pub unsafe extern "C" fn move_rt_sui_take(
+    account: *const Address,
+    id: &Address,
+    d: &TypeDesc,
+    out: *mut u8,
+) {
+    let owner = owner_of(account);
+    let obj = INVENTORY.with(|inv| {
+        let matches = inv
+            .objects
+            .get(id)
+            .is_some_and(|o| o.owner == owner && ptr::eq(o.desc, d));
+        let obj = if matches {
+            inv.objects.remove(id)
+        } else {
+            None
+        }?;
+        inv.taken.insert(*id, owner);
         Some(obj)
     });
     let Some(obj) = obj else {
@@ -177,8 +227,44 @@ pub unsafe extern "C" fn move_rt_sui_take_shared(id: &Address, d: &TypeDesc, out
     unsafe { ptr::copy_nonoverlapping(obj.data, out, d.size() as usize) };
 }
 
-/// `test_scenario::was_taken_shared(id)`.
+/// `was_taken_shared(id)` (`account` null) / `was_taken_from_address(account, id)`.
+///
+/// # Safety
+/// `account` is null or a valid address.
 #[unsafe(no_mangle)]
-pub extern "C" fn move_rt_sui_was_taken_shared(id: &Address) -> bool {
-    SHARED.with(|(_, taken)| taken.contains_key(id))
+pub unsafe extern "C" fn move_rt_sui_was_taken(account: *const Address, id: &Address) -> bool {
+    let owner = owner_of(account);
+    INVENTORY.with(|inv| inv.taken.get(id) == Some(&owner))
+}
+
+/// `most_recent_id_shared<T>()` / `most_recent_id_for_address<T>(account)`: writes an
+/// `Option<ID>` (described by `opt`) to `out`.
+///
+/// # Safety
+/// `out` is valid for writes of an `Option<ID>`; `account` is null or a valid address.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn move_rt_sui_most_recent(
+    account: *const Address,
+    d: &TypeDesc,
+    opt: &TypeDesc,
+    out: *mut u8,
+) {
+    let owner = owner_of(account);
+    let found = INVENTORY.with(|inv| {
+        inv.objects
+            .iter()
+            .filter(|(_, o)| o.owner == owner && ptr::eq(o.desc, d))
+            .max_by_key(|(_, o)| o.seq)
+            .map(|(id, _)| *id)
+    });
+    // Option<ID> = { vec: vector<ID> }, ID = { bytes: address }
+    // SAFETY: guaranteed by the caller.
+    let slot = unsafe { Slot::new(opt, out) };
+    let vec = slot.fields().next().expect("Option.vec");
+    for mut id_slot in vec.init_vector(found.is_some() as usize) {
+        while id_slot.desc().kind() == Kind::Struct {
+            id_slot = id_slot.fields().next().expect("single-field wrapper");
+        }
+        id_slot.write_prim(&found.unwrap());
+    }
 }
