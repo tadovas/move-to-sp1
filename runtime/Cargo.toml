@@ -9,7 +9,9 @@ license = "Apache-2.0"
 crate-type = ["staticlib"]
 
 [dependencies]
-sp1-zkvm = "6.10.0"
+# `bump`: pointer-increment allocator. Move memory is never freed, so a general-purpose
+# allocator (the default, TLSF) only adds cycles.
+sp1-zkvm = { version = "6.10.0", features = ["bump"] }
 sha2 = { version = "0.10", default-features = false }
 sha3 = { version = "0.10", default-features = false }
 
