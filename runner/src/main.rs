@@ -51,6 +51,9 @@ async fn main() -> Result<()> {
                 abi.params.join(", "),
                 abi.returns.join(", ")
             );
+            if !abi.effects.is_empty() {
+                println!("effects may include:\n  {}", abi.effects.join("\n  "));
+            }
         }
         Cmd::Run { elf, args, compact } => run(elf, args, compact).await?,
     }
