@@ -10,6 +10,12 @@ use crate::desc::{Kind, Slot, Value};
 
 pub fn encode(v: Value, out: &mut Vec<u8>) {
     match v.desc().kind() {
+        // fast path: bytes are copied as one slice
+        Kind::Vector if v.desc().elem().kind() == Kind::U8 => {
+            let bytes = v.vec_bytes();
+            uleb128(bytes.len() as u64, out);
+            out.extend_from_slice(bytes);
+        }
         Kind::Vector => {
             let elems = v.elems();
             uleb128(elems.len() as u64, out);
@@ -27,6 +33,10 @@ pub fn encode(v: Value, out: &mut Vec<u8>) {
 
 pub fn decode(slot: Slot, input: &mut &[u8]) -> Result<(), &'static str> {
     match slot.desc().kind() {
+        Kind::Vector if slot.desc().elem().kind() == Kind::U8 => {
+            let n = read_uleb128(input)? as usize;
+            slot.init_bytes(take(input, n)?);
+        }
         Kind::Vector => {
             let n = read_uleb128(input)?;
             for e in slot.init_vector(n as usize) {

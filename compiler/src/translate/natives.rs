@@ -4,11 +4,15 @@
 use anyhow::{Result, bail};
 use inkwell::{
     IntPredicate,
-    values::{BasicMetadataValueEnum, IntValue, StructValue},
+    values::{BasicMetadataValueEnum, BasicValueEnum, IntValue, StructValue},
 };
 use move_core_types::account_address::AccountAddress;
 
-use super::{FnInst, Translator, function::Frame, types::Type};
+use super::{
+    FnInst, Translator,
+    function::Frame,
+    types::{Type, struct_fields},
+};
 
 impl<'ctx> Translator<'ctx, '_> {
     pub(super) fn call_native(&mut self, fr: &mut Frame<'ctx>, f: &FnInst) -> Result<()> {
@@ -118,6 +122,24 @@ impl<'ctx> Translator<'ctx, '_> {
                 )?;
             }
             "debug::print_stack_trace" => {}
+            // Resolved at compile time; without package upgrades, defining == original ids.
+            "type_name::with_defining_ids" | "type_name::with_original_ids" => {
+                let (_, returns) = self.signature(f)?;
+                let name = t(0).canonical(self.prog);
+                let bytes = self.vec_from_bytes(name.as_bytes())?;
+                let v = self.wrap_bytes(&returns[0], bytes.into())?;
+                fr.push(v, returns[0].clone());
+            }
+            "type_name::defining_id" | "type_name::original_id" => {
+                let Some(m) = t(0).defining_module() else {
+                    bail!(
+                        "{name}<{}>: not a struct or enum type",
+                        t(0).display(self.prog)
+                    );
+                };
+                let addr = self.prog.module(m).address().into_bytes();
+                fr.push(self.const_int_le(256, &addr), Type::Address);
+            }
             "hash::sha2_256" | "hash::sha3_256" => {
                 let (v, _) = fr.pop()?;
                 let rt = if name == "hash::sha2_256" {
@@ -164,6 +186,28 @@ impl<'ctx> Translator<'ctx, '_> {
             _ => bail!("native function {name} is not supported yet"),
         }
         Ok(())
+    }
+
+    /// Wrap a `vector<u8>` in single-field structs down to `ty` (e.g. `TypeName { name:
+    /// ascii::String { bytes } }`).
+    fn wrap_bytes(&self, ty: &Type, bytes: BasicValueEnum<'ctx>) -> Result<BasicValueEnum<'ctx>> {
+        match ty {
+            Type::Vector(_) => Ok(bytes),
+            Type::Struct(id, args) => {
+                let fields = struct_fields(self.prog, *id, args)?;
+                let [inner] = fields.as_slice() else {
+                    bail!("expected a single-field wrapper struct")
+                };
+                let v = self.wrap_bytes(inner, bytes)?;
+                let st = self.llvm_type(ty)?.into_struct_type();
+                Ok(self
+                    .builder
+                    .build_insert_value(st.get_undef(), v, 0, "")?
+                    .into_struct_value()
+                    .into())
+            }
+            other => bail!("cannot wrap bytes into {other:?}"),
+        }
     }
 
     /// Call a runtime native that produces a `vector<u8>` through a trailing out-pointer.

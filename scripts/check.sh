@@ -62,6 +62,11 @@ io.move|grow|"Empty"|"Empty"
 io.move|greet|move|"hello, move"
 io.move|digests|abc|["0xba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","0x3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532"]
 io.move|encode|{"x":1,"y":2}|"0x01000000000000000200000000000000"
+typename.move|coin_name||"0000000000000000000000000000000000000000000000000000000000000100::typename::Coin<0000000000000000000000000000000000000000000000000000000000000100::typename::USD>"
+typename.move|vector_name||"vector<u64>"
+typename.move|module_of||"typename"
+typename.move|defining||"0x0000000000000000000000000000000000000000000000000000000000000100"
+typename.move|primitive||true
 amm.move|apply|{"reserve_a":1000000,"reserve_b":500000,"lp_supply":707106,"fee_bps":30} [{"SwapAForB":{"amount_in":10000,"min_out":4900}},{"SwapBForA":{"amount_in":2500,"min_out":0}},{"AddLiquidity":{"amount_a":50000,"amount_b":30000}},{"RemoveLiquidity":{"lp":100000}}]|=model
 amm.move|apply|{"reserve_a":1000000,"reserve_b":500000,"lp_supply":707106,"fee_bps":30} [{"SwapAForB":{"amount_in":10000,"min_out":5000}}]|=model
 amm.move|apply|{"reserve_a":0,"reserve_b":0,"lp_supply":0,"fee_bps":5} [{"AddLiquidity":{"amount_a":4000000,"amount_b":9000000}},{"SwapBForA":{"amount_in":90000,"min_out":39000}}]|=model

@@ -361,6 +361,14 @@ impl<'a> Slot<'a> {
         (0..n).map(move |i| base.at(e, i * e.size as usize))
     }
 
+    /// Store a fresh `vector<u8>` holding `bytes`.
+    pub fn init_bytes(self, bytes: &[u8]) {
+        assert!(self.desc.kind() == Kind::Vector && self.desc.elem().kind() == Kind::U8);
+        let header = VecHeader::from_bytes(bytes);
+        // SAFETY: a vector slot holds a `VecHeader`.
+        unsafe { (self.ptr as *mut MaybeUninit<VecHeader>).as_mut().unwrap() }.write(header);
+    }
+
     /// Slots of a struct's fields, in declaration order.
     pub fn fields(self) -> impl Iterator<Item = Slot<'a>> + 'a {
         assert_eq!(self.desc.kind(), Kind::Struct);

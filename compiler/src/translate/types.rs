@@ -134,6 +134,46 @@ impl Type {
     }
 }
 
+impl Type {
+    /// Sui's canonical type string (what `std::type_name` returns): addresses as 64 hex
+    /// digits without `0x`, type arguments separated by `,` without spaces, e.g.
+    /// `0000…0002::coin::Coin<0000…0002::sui::SUI>`.
+    pub fn canonical(&self, prog: &Program) -> String {
+        let datatype = |m: ModuleIdx, name: String, args: &[Type]| {
+            let cm = prog.module(m);
+            let args = args.iter().map(|a| a.canonical(prog)).collect::<Vec<_>>();
+            let args = if args.is_empty() {
+                String::new()
+            } else {
+                format!("<{}>", args.join(","))
+            };
+            let name = name.rsplit("::").next().unwrap().to_string();
+            format!(
+                "{}::{}::{}{args}",
+                cm.address().to_canonical_string(false),
+                cm.name(),
+                name
+            )
+        };
+        match self {
+            Type::Vector(e) => format!("vector<{}>", e.canonical(prog)),
+            Type::Struct(id, args) => datatype(id.module, prog.struct_name(*id), args),
+            Type::Enum(id, args) => datatype(id.module, prog.enum_name(*id), args),
+            Type::Ref(t) => t.canonical(prog),
+            scalar => scalar.display(prog),
+        }
+    }
+
+    /// Module defining a struct/enum type.
+    pub fn defining_module(&self) -> Option<ModuleIdx> {
+        match self {
+            Type::Struct(id, _) => Some(id.module),
+            Type::Enum(id, _) => Some(id.module),
+            _ => None,
+        }
+    }
+}
+
 /// `<T1, T2>` (nothing for an empty list).
 pub fn display_args(prog: &Program, args: &[Type]) -> String {
     let mut s = String::new();

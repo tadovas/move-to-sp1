@@ -125,6 +125,24 @@ impl<'ctx> Translator<'ctx, '_> {
             .into_struct_value())
     }
 
+    /// A `vector<u8>` holding `bytes`: one `memcpy` from a read-only constant.
+    pub(super) fn vec_from_bytes(&self, bytes: &[u8]) -> Result<StructValue<'ctx>> {
+        let n = self.ctx.i64_type().const_int(bytes.len() as u64, false);
+        let data = self.alloc(n)?;
+        if !bytes.is_empty() {
+            let init = self.ctx.const_string(bytes, false);
+            let g = self.module.add_global(init.get_type(), None, ".bytes");
+            g.set_initializer(&init);
+            g.set_constant(true);
+            g.set_linkage(inkwell::module::Linkage::Private);
+            g.set_unnamed_addr(true);
+            self.builder
+                .build_memcpy(data, 16, g.as_pointer_value(), 1, n)
+                .map_err(anyhow::Error::msg)?;
+        }
+        self.vec_from_parts(data, n)
+    }
+
     /// `VecUnpack`: aborts unless the vector has exactly `n` elements.
     pub(super) fn vec_unpack(
         &self,

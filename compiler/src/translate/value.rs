@@ -270,6 +270,10 @@ impl<'ctx> Translator<'ctx, '_> {
                 let bytes = r.take(bits.div_ceil(8) as usize)?;
                 self.const_int_le(bits, bytes).into()
             }
+            Type::Vector(elem) if **elem == Type::U8 => {
+                let n = r.uleb128()?;
+                self.vec_from_bytes(r.take(n as usize)?)?.into()
+            }
             Type::Vector(elem) => {
                 let n = r.uleb128()?;
                 let elems = (0..n)
