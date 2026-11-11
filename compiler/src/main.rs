@@ -112,7 +112,7 @@ fn main() -> Result<()> {
             objects.extend(members);
             let notes = [link::NoteSection {
                 name: ".move2sp1.abi".into(),
-                data: abi.to_text().into_bytes(),
+                data: abi.to_json().into_bytes(),
             }];
             let elf = link::link(&objects, &notes, "_start")?;
             std::fs::write(&output, &elf)?;

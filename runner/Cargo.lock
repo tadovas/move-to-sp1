@@ -1914,6 +1914,7 @@ dependencies = [
  "clap",
  "num-bigint 0.4.8",
  "object 0.37.3",
+ "serde_json",
  "sp1-sdk",
  "tokio",
 ]

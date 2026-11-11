@@ -1,41 +1,40 @@
 //! `__move_entry`: the glue between the runtime's `main` and the Move entry function, and
 //! the program ABI recorded in the ELF (`.move2sp1.abi`) for the runner.
 //!
-//! Wire format (for now scalars only): every argument is one SP1 stdin buffer with the
-//! value's little-endian bytes (bool = 1 byte, address = its 32 raw bytes); results are
-//! appended to the public values in the same encoding.
+//! I/O format: every argument is one SP1 stdin buffer holding its BCS encoding; results are
+//! appended to the public values as BCS, in order. The ABI is JSON:
+//!
+//! ```json
+//! { "entry": "pool::swap", "params": ["pool::Pool", "u64"], "returns": [...],
+//!   "types": { "pool::Pool": { "struct": [["reserve_a", "u64"], ...] },
+//!              "m::Shape":   { "enum": [["Circle", [["r", "u64"]]], ["Empty", []]] } } }
+//! ```
+
+use std::collections::BTreeMap;
 
 use anyhow::{Result, bail};
 use inkwell::{
-    IntPredicate,
     module::Linkage,
     values::{BasicMetadataValueEnum, BasicValueEnum, FunctionValue},
 };
+use serde_json::{Value, json};
 
-use super::{FnId, FnInst, Translator, types::Type};
+use super::{
+    FnId, FnInst, Translator,
+    types::{Type, struct_fields, variant_fields},
+};
 
-/// Signature of the entry function, as recorded for the runner.
+/// The program ABI, serialized into the ELF.
 pub struct EntryAbi {
     pub name: String,
     pub params: Vec<String>,
     pub returns: Vec<String>,
+    json: Value,
 }
 
 impl EntryAbi {
-    pub fn to_text(&self) -> String {
-        format!(
-            "entry {}\nparams {}\nreturns {}\n",
-            self.name,
-            self.params.join(" "),
-            self.returns.join(" ")
-        )
-    }
-}
-
-fn wire_bytes(ty: &Type) -> Result<u64> {
-    match ty.int_bits() {
-        Some(bits) => Ok(bits.div_ceil(8) as u64),
-        None => bail!("entry functions can only take/return scalars for now (found {ty:?})"),
+    pub fn to_json(&self) -> String {
+        self.json.to_string()
     }
 }
 
@@ -49,7 +48,16 @@ impl<'ctx> Translator<'ctx, '_> {
             id: entry,
             type_args: vec![],
         })?;
-        let i64t = self.ctx.i64_type();
+        if let Some(r) = params
+            .iter()
+            .chain(&returns)
+            .find(|t| matches!(t, Type::Ref(_)))
+        {
+            bail!(
+                "entry functions cannot take or return references ({})",
+                r.display(self.prog)
+            );
+        }
         let glue = self.module.add_function(
             "__move_entry",
             self.ctx.void_type().fn_type(&[], false),
@@ -59,23 +67,18 @@ impl<'ctx> Translator<'ctx, '_> {
             .position_at_end(self.ctx.append_basic_block(glue, "entry"));
 
         let mut args: Vec<BasicMetadataValueEnum> = vec![];
-        for (i, ty) in params.iter().enumerate() {
-            let n = wire_bytes(ty)?;
-            let wire = self.int_type(n as u32 * 8);
-            let slot = self.builder.build_alloca(wire, &format!("arg{i}"))?;
-            self.builder.build_call(
-                self.rt_read_arg(),
-                &[slot.into(), i64t.const_int(n, false).into()],
-                "",
+        for ty in &params {
+            let slot = self.builder.build_alloca(self.llvm_type(ty)?, "arg")?;
+            self.call_runtime(
+                "move_rt_read_value",
+                None,
+                &[self.type_desc(ty)?.into(), slot.into()],
             )?;
-            let v = self.builder.build_load(wire, slot, "")?.into_int_value();
-            let v = if *ty == Type::Bool {
+            args.push(
                 self.builder
-                    .build_int_compare(IntPredicate::NE, v, wire.const_zero(), "")?
-            } else {
-                v
-            };
-            args.push(v.into());
+                    .build_load(self.llvm_type(ty)?, slot, "")?
+                    .into(),
+            );
         }
 
         let call = self.builder.build_call(target, &args, "ret")?;
@@ -94,26 +97,92 @@ impl<'ctx> Translator<'ctx, '_> {
             }
         };
         for (v, ty) in results.into_iter().zip(&returns) {
-            let n = wire_bytes(ty)?;
-            let wire = self.int_type(n as u32 * 8);
-            let v = self
-                .builder
-                .build_int_z_extend_or_bit_cast(v.into_int_value(), wire, "")?;
-            let slot = self.builder.build_alloca(wire, "out")?;
-            self.builder.build_store(slot, v)?;
-            self.builder.build_call(
-                self.rt_commit(),
-                &[slot.into(), i64t.const_int(n, false).into()],
-                "",
+            let slot = self.spill(v)?;
+            self.call_runtime(
+                "move_rt_commit_value",
+                None,
+                &[self.type_desc(ty)?.into(), slot.into()],
             )?;
         }
         self.builder.build_return(None)?;
 
-        let names = |tys: &[Type]| tys.iter().map(|t| t.display(self.prog)).collect();
+        let mut types = BTreeMap::new();
+        for ty in params.iter().chain(&returns) {
+            self.schema(ty, &mut types)?;
+        }
+        let names =
+            |tys: &[Type]| -> Vec<String> { tys.iter().map(|t| t.display(self.prog)).collect() };
+        let (name, params, returns) = (
+            self.prog.function_name(entry),
+            names(&params),
+            names(&returns),
+        );
+        let json = json!({ "entry": name, "params": params, "returns": returns, "types": types });
         Ok(EntryAbi {
-            name: self.prog.function_name(entry),
-            params: names(&params),
-            returns: names(&returns),
+            name,
+            params,
+            returns,
+            json,
         })
+    }
+
+    /// Record the field layout of every struct/enum reachable from `ty`.
+    fn schema(&self, ty: &Type, out: &mut BTreeMap<String, Value>) -> Result<()> {
+        let name = ty.display(self.prog);
+        if out.contains_key(&name) {
+            return Ok(());
+        }
+        let field_list = |names: Vec<String>, tys: &[Type]| -> Vec<Value> {
+            names
+                .into_iter()
+                .zip(tys)
+                .map(|(n, t)| json!([n, t.display(self.prog)]))
+                .collect()
+        };
+        match ty {
+            Type::Vector(e) => self.schema(e, out)?,
+            Type::Struct(id, args) => {
+                let tys = struct_fields(self.prog, *id, args)?;
+                let cm = self.prog.module(id.module);
+                let names = cm
+                    .struct_def_at(id.def)
+                    .fields()
+                    .unwrap()
+                    .iter()
+                    .map(|f| cm.identifier_at(f.name).to_string())
+                    .collect();
+                out.insert(name, json!({ "struct": field_list(names, &tys) }));
+                for t in &tys {
+                    self.schema(t, out)?;
+                }
+            }
+            Type::Enum(id, args) => {
+                let cm = self.prog.module(id.module);
+                let def = cm.enum_def_at(id.def);
+                let all = variant_fields(self.prog, *id, args)?;
+                let variants: Vec<Value> = def
+                    .variants
+                    .iter()
+                    .zip(&all)
+                    .map(|(v, tys)| {
+                        let names = v
+                            .fields
+                            .iter()
+                            .map(|f| cm.identifier_at(f.name).to_string())
+                            .collect();
+                        json!([
+                            cm.identifier_at(v.variant_name).as_str(),
+                            field_list(names, tys)
+                        ])
+                    })
+                    .collect();
+                out.insert(name, json!({ "enum": variants }));
+                for t in all.iter().flatten() {
+                    self.schema(t, out)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 }

@@ -2,13 +2,26 @@
 //!
 //! `sp1-zkvm` supplies `_start`, the allocator, syscalls and the halt sequence
 //! (public-values digest commit). We provide `main`, which calls the compiler-generated
-//! `__move_entry`, plus the helpers generated code calls into (`move_rt_*`).
+//! `__move_entry`, plus the `move_rt_*` functions generated code calls into. The compiler
+//! side of this interface is `compiler/src/translate/runtime.rs`.
+//!
+//! * `desc`    — type descriptors and value layout (shared with the compiler)
+//! * `bcs`     — BCS encode/decode of values
+//! * `print`   — `debug::print` formatting
+//! * `natives` — Move native functions implemented here (bcs, debug, hash, string)
 #![no_std]
 #![no_main]
 
 extern crate alloc;
 
+mod bcs;
+mod desc;
+mod natives;
+mod print;
+
 use alloc::vec::Vec;
+
+use desc::TypeDesc;
 
 sp1_zkvm::entrypoint!(main);
 
@@ -21,37 +34,35 @@ fn main() {
     unsafe { __move_entry() }
 }
 
-/// Read the next input from the SP1 stdin stream into `dst`; it must be exactly `size` bytes.
+/// Decode the next SP1 stdin buffer (BCS) into the value at `out`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn move_rt_read_arg(dst: *mut u8, size: u64) {
-    let v: Vec<u8> = sp1_zkvm::io::read_vec();
-    if v.len() as u64 != size {
+pub unsafe extern "C" fn move_rt_read_value(d: &TypeDesc, out: *mut u8) {
+    let buf: Vec<u8> = sp1_zkvm::io::read_vec();
+    let mut input = buf.as_slice();
+    if let Err(e) = unsafe { bcs::decode(d, &mut input, out) } {
+        panic!("bad argument of type {}: {e}", d.name());
+    }
+    if !input.is_empty() {
         panic!(
-            "argument size mismatch: expected {} bytes, got {}",
-            size,
-            v.len()
+            "bad argument of type {}: {} trailing bytes",
+            d.name(),
+            input.len()
         );
     }
-    unsafe { core::ptr::copy_nonoverlapping(v.as_ptr(), dst, v.len()) };
 }
 
-/// Append `len` bytes to the public values (the program's committed output).
+/// Append the BCS encoding of the value at `p` to the public values.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn move_rt_commit(src: *const u8, len: u64) {
-    let s = unsafe { core::slice::from_raw_parts(src, len as usize) };
-    sp1_zkvm::io::commit_slice(s);
+pub unsafe extern "C" fn move_rt_commit_value(d: &TypeDesc, p: *const u8) {
+    let mut out = Vec::new();
+    unsafe { bcs::encode(d, p, &mut out) };
+    sp1_zkvm::io::commit_slice(&out);
 }
 
-/// Move `abort <code>` (and VM-level aborts such as arithmetic overflow).
+/// Move `abort <code>`.
 #[unsafe(no_mangle)]
 pub extern "C" fn move_rt_abort(code: u64) -> ! {
     panic!("Move abort with code {code}");
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn move_rt_alloc(size: u64, align: u64) -> *mut u8 {
-    let layout = core::alloc::Layout::from_size_align(size as usize, align as usize).unwrap();
-    unsafe { alloc::alloc::alloc(layout) }
 }
 
 /// VM-level failure, with a Move VM status code (`ARITHMETIC_ERROR`, ...).
@@ -64,4 +75,10 @@ pub extern "C" fn move_rt_vm_error(status: u64) -> ! {
         _ => "VM_ERROR",
     };
     panic!("Move VM error {name} ({status})");
+}
+
+/// Heap memory for generated code (16-byte aligned, never freed).
+#[unsafe(no_mangle)]
+pub extern "C" fn move_rt_alloc(size: u64, _align: u64) -> *mut u8 {
+    desc::alloc(size as usize)
 }

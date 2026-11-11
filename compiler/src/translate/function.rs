@@ -372,8 +372,7 @@ impl<'ctx> Translator<'ctx, '_> {
             }
             B::Abort => {
                 let (code, _) = fr.pop()?;
-                b.build_call(self.rt_abort(), &[code.into()], "")?;
-                b.build_unreachable()?;
+                self.abort(code.into_int_value())?;
                 fr.stack.clear();
                 return Ok(true);
             }

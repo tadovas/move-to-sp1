@@ -18,11 +18,14 @@ while IFS='|' read -r file entry args expected; do
     echo "FAIL $entry: compile error"; sed 's/^/    /' /tmp/m2s.err | tail -5; fail=$((fail+1)); continue
   fi
   # shellcheck disable=SC2086
-  out=$("$VM" run "$elf" $args 2>&1 || true)
+  out=$("$VM" run --compact "$elf" $args 2>&1 || true)
   if [[ "$expected" == abort:* ]]; then
     grep -q "${expected#abort:}" <<<"$out" && ok=1 || ok=0
   else
-    grep -q "= ${expected}\$" <<<"$out" && ok=1 || ok=0
+    # compare as JSON values (formatting/key order independent)
+    actual=$(sed -n 's/^[^ ]*(.*) = //p' <<<"$out" | head -1)
+    python3 -c 'import json,sys; sys.exit(json.loads(sys.argv[1]) != json.loads(sys.argv[2]))' \
+      "$actual" "$expected" 2>/dev/null && ok=1 || ok=0
   fi
   if (( ok )); then
     echo "ok   $entry($args) -> $expected   [$(grep -o 'cycles: [0-9]*' <<<"$out" || echo aborted)]"; pass=$((pass+1))
@@ -47,6 +50,13 @@ enums.move|test_shapes||24
 enums.move|test_widen||2412
 enums.move|test_generic||512
 enums.move|test_eq||111
+io.move|scale|{"x":3,"y":4} 10|{"x":30,"y":40}
+io.move|sum_points|[{"x":1,"y":2},{"x":10,"y":20}]|{"x":11,"y":22}
+io.move|grow|{"Rect":{"w":3,"h":4}}|{"Rect":{"w":4,"h":5}}
+io.move|grow|"Empty"|"Empty"
+io.move|greet|move|"hello, move"
+io.move|digests|abc|["0xba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","0x3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532"]
+io.move|encode|{"x":1,"y":2}|"0x01000000000000000200000000000000"
 CASES
 
 echo "$pass passed, $fail failed"

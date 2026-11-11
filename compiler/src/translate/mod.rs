@@ -20,10 +20,12 @@
 //! * `value`    — copy, equality, constants
 //! * `vector`   — vector layout and operations
 //! * `enums`    — enum layout, variants and `VariantSwitch`
-//! * `natives`  — native functions (`std::vector`, ...)
+//! * `natives`  — native functions (`std::vector`, `bcs`, `hash`, `string`, `debug`)
+//! * `descriptor` — type descriptors: value layouts the runtime walks (BCS, printing)
 //! * `runtime`  — the `move_rt_*` runtime interface
 //! * `entry`    — `__move_entry` glue and the program ABI
 
+mod descriptor;
 mod entry;
 mod enums;
 mod function;

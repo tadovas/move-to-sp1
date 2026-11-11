@@ -1369,6 +1369,7 @@ dependencies = [
  "move-core-types",
  "move-symbol-pool",
  "object 0.37.3",
+ "serde_json",
 ]
 
 [[package]]
