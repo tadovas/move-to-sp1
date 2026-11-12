@@ -12,6 +12,7 @@
 //! 5. Run once more on the complete state (no partial mode) — the run that would be proven —
 //!    and compare its written objects and events with the chain's.
 
+mod batch;
 mod chain;
 
 use std::{
@@ -36,7 +37,16 @@ use serde_json::{Value, json};
 )]
 struct Cli {
     /// Transaction digest (base58).
-    digest: String,
+    digest: Option<String>,
+    /// Instead: replay every user transaction of these checkpoints (`SEQ` or `FIRST-LAST`).
+    #[arg(long, conflicts_with_all = ["digest", "latest"])]
+    checkpoints: Option<String>,
+    /// Instead: replay the N most recent user transactions.
+    #[arg(long, conflicts_with = "digest")]
+    latest: Option<usize>,
+    /// Replays run in parallel (batch mode).
+    #[arg(long, default_value_t = 8)]
+    jobs: usize,
     /// GraphQL endpoint.
     #[arg(long, default_value = chain::MAINNET)]
     url: String,
@@ -52,12 +62,15 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let Some(digest) = cli.digest.clone() else {
+        return batch::run(&cli).await;
+    };
     let mut chain = Chain::new(&cli.url, cli.out.join("cache"))?;
-    let dir = cli.out.join(&cli.digest);
+    let dir = cli.out.join(&digest);
     std::fs::create_dir_all(&dir)?;
 
     // 1. the transaction
-    let tx = chain.transaction(&cli.digest).await?;
+    let tx = chain.transaction(&digest).await?;
     let data = &tx["transactionJson"];
     let effects = &tx["effects"];
     let fx = &effects["effectsJson"];
@@ -72,7 +85,7 @@ async fn main() -> Result<()> {
     let checkpoint = num(&effects["checkpoint"]["sequenceNumber"]).context("checkpoint")?;
     println!(
         "tx {} (checkpoint {}, {}), sender {}",
-        cli.digest,
+        digest,
         effects["checkpoint"]["sequenceNumber"],
         effects["timestamp"].as_str().unwrap_or("?"),
         short(tx["sender"]["address"].as_str().unwrap_or("?")),
@@ -291,7 +304,7 @@ async fn main() -> Result<()> {
     let epoch = &effects["epoch"];
     let ctx = json!({
         "sender": tx["sender"]["address"],
-        "tx_hash": format!("0x{}", hex(&bs58::decode(&cli.digest).into_vec()?)),
+        "tx_hash": format!("0x{}", hex(&bs58::decode(&digest).into_vec()?)),
         "epoch": epoch["epochId"],
         "epoch_timestamp_ms": iso_ms(epoch["startTimestamp"].as_str().context("epoch start")?)?,
         "ids_created": 0,

@@ -94,7 +94,7 @@ backed by SP1's precompiles (SHA-256, Keccak, secp256k1/r1, ed25519, BLS12-381).
 | checkpoints [150,000,000](https://suiscan.xyz/mainnet/checkpoint/150000000)–[009](https://suiscan.xyz/mainnet/checkpoint/150000009) (May 2025) | 61 | **61** | — |
 | 200 random recent transactions | 200 | 199 (the other one fixed since) | — |
 
-`scripts/replay-sample.py --checkpoint A-B` (8 in parallel: 572 transactions in 2 min 48 s, ~510k
+`sui-replay --checkpoints A-B` (8 in parallel: 572 transactions in 2 min 48 s, ~510k
 cycles each on average). Transactions that failed on chain count as byte-identical when the
 replay fails with the same abort code in the same module.
 
@@ -228,9 +228,9 @@ target/release/sui-replay AjzaKVKPjr49AZk68PpKJzo3D7spa753oMgnrA8DPGdq
 d=out/replay/AjzaKVKPjr49AZk68PpKJzo3D7spa753oMgnrA8DPGdq
 target/release/movevm prove $d/image.elf "$(cat $d/ctx.json)" --ptb $d/ptb.json --state-in $d/state_in.bin
 
-# every user transaction of a checkpoint range; or a random sample of recent ones
-scripts/replay-sample.py --checkpoint 344393000-344393019
-scripts/replay-sample.py 200
+# every user transaction of a checkpoint range; or the latest ones (8 in parallel)
+target/release/sui-replay --checkpoints 344393000-344393019
+target/release/sui-replay --latest 200
 
 # one proof for whole checkpoints
 scripts/prove-checkpoint.sh 150000003-150000006

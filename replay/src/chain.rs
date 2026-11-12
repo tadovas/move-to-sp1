@@ -35,10 +35,19 @@ impl Chain {
     }
 
     async fn query(&mut self, query: &str, vars: Value) -> Result<Value> {
+        self.request(query, vars, true).await
+    }
+
+    /// A query whose answer changes over time (e.g. the latest transactions): not cached.
+    pub async fn query_live(&mut self, query: &str, vars: Value) -> Result<Value> {
+        self.request(query, vars, false).await
+    }
+
+    async fn request(&mut self, query: &str, vars: Value, cached: bool) -> Result<Value> {
         let body = json!({ "query": query, "variables": vars });
         let key = hex(&sha2::Sha256::digest(body.to_string().as_bytes())[..12]);
         let path = self.cache.join(format!("{key}.json"));
-        if let Ok(bytes) = std::fs::read(&path) {
+        if cached && let Ok(bytes) = std::fs::read(&path) {
             return Ok(serde_json::from_slice(&bytes)?);
         }
         let resp: Value = self
@@ -56,8 +65,56 @@ impl Chain {
         }
         let data = resp["data"].clone();
         self.fetched += 1;
-        std::fs::write(&path, serde_json::to_vec_pretty(&data)?)?;
+        if cached {
+            std::fs::write(&path, serde_json::to_vec_pretty(&data)?)?;
+        }
         Ok(data)
+    }
+
+    /// The user (programmable) transactions of a checkpoint, and how many others it has.
+    pub async fn checkpoint_transactions(&mut self, seq: u64) -> Result<(Vec<String>, usize)> {
+        let (mut user, mut system, mut after) = (vec![], 0, None::<String>);
+        loop {
+            let q = r#"query($c: UInt53!, $a: String) { checkpoint(sequenceNumber: $c) {
+                transactions(first: 50, after: $a) {
+                    pageInfo { hasNextPage endCursor } nodes { digest kind { __typename } } } } }"#;
+            let d = self.query(q, json!({ "c": seq, "a": after })).await?;
+            let page = &d["checkpoint"]["transactions"];
+            ensure!(!page.is_null(), "checkpoint {seq} not found");
+            for t in page["nodes"].as_array().context("nodes")? {
+                match t["kind"]["__typename"].as_str() {
+                    Some("ProgrammableTransaction") => {
+                        user.push(t["digest"].as_str().context("digest")?.to_string())
+                    }
+                    _ => system += 1,
+                }
+            }
+            if page["pageInfo"]["hasNextPage"] != true {
+                return Ok((user, system));
+            }
+            after = page["pageInfo"]["endCursor"].as_str().map(String::from);
+        }
+    }
+
+    /// The `n` most recent user transactions (newest first).
+    pub async fn latest_transactions(&mut self, n: usize) -> Result<Vec<String>> {
+        let (mut out, mut before) = (vec![], None::<String>);
+        while out.len() < n {
+            let q = r#"query($b: String) { transactions(last: 50, before: $b) {
+                pageInfo { startCursor } nodes { digest kind { __typename } } } }"#;
+            let d = self.query_live(q, json!({ "b": before })).await?;
+            let t = &d["transactions"];
+            let nodes = t["nodes"].as_array().context("nodes")?;
+            ensure!(!nodes.is_empty(), "no transactions");
+            for x in nodes.iter().rev() {
+                if x["kind"]["__typename"] == "ProgrammableTransaction" {
+                    out.push(x["digest"].as_str().context("digest")?.to_string());
+                }
+            }
+            before = t["pageInfo"]["startCursor"].as_str().map(String::from);
+        }
+        out.truncate(n);
+        Ok(out)
     }
 
     /// The chain identifier: the genesis checkpoint digest (32 bytes).
