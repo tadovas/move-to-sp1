@@ -153,10 +153,14 @@ impl<'ctx> Translator<'ctx, '_> {
             "unit_test::destroy" => {
                 fr.pop()?; // test-only: drop any value (memory is never freed anyway)
             }
-            // Resolved at compile time; without package upgrades, defining == original ids.
-            "type_name::with_defining_ids" | "type_name::with_original_ids" => {
+            // Resolved at compile time. `get` / `get_with_original_ids` are the natives of older
+            // frameworks (before `with_defining_ids` / `with_original_ids`).
+            "type_name::with_defining_ids"
+            | "type_name::with_original_ids"
+            | "type_name::get"
+            | "type_name::get_with_original_ids" => {
                 let (_, returns) = self.signature(f)?;
-                let name = t(0).canonical_with(self.prog, name.ends_with("defining_ids"));
+                let name = t(0).canonical_with(self.prog, !name.contains("original_ids"));
                 let bytes = self.vec_from_bytes(name.as_bytes())?;
                 let v = self.wrap_bytes(&returns[0], bytes.into())?;
                 fr.push(v, returns[0].clone());
