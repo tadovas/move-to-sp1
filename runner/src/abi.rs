@@ -348,19 +348,25 @@ impl Abi {
             let mut e = vec![(
                 "kind".to_string(),
                 Out::Str(
-                    ["event", "transfer", "share", "freeze"]
+                    ["event", "transfer", "share", "freeze", "accumulator"]
                         .get(tag as usize)
                         .unwrap_or(&"?")
                         .to_string(),
                 ),
             )];
             e.push(("type".into(), Out::Str(ty.clone())));
-            if tag == 1 {
+            if tag == 1 || tag == 4 {
                 e.push(("recipient".into(), Out::Str(hex(take(input, 32)?))));
             }
             let len = read_uleb128(input)? as usize;
             let mut value = take(input, len)?;
-            let decoded = if self.types.contains_key(&ty) {
+            let decoded = if tag == 4 && value.len() == 9 {
+                let amount = u64::from_le_bytes(value[1..].try_into()?);
+                Out::Str(format!(
+                    "{} {amount}",
+                    ["merge", "split"][(value[0] & 1) as usize]
+                ))
+            } else if self.types.contains_key(&ty) {
                 self.decode(&ty, &mut value)?
             } else {
                 Out::Str(hex(value))
@@ -375,7 +381,7 @@ impl Abi {
 /// One effect as committed, undecoded (see `runtime/sui/src/effects.rs`).
 #[derive(Clone, Debug)]
 pub struct EffectRecord {
-    /// 0 event, 1 transfer, 2 share, 3 freeze
+    /// 0 event, 1 transfer, 2 share, 3 freeze, 4 accumulator (address balance)
     pub tag: u8,
     /// Canonical type name.
     pub type_name: String,
@@ -390,7 +396,7 @@ pub fn effect_records(input: &mut &[u8]) -> Result<Vec<EffectRecord>> {
         .map(|_| {
             let tag = take(input, 1)?[0];
             let type_name = String::from_utf8(read_bytes(input)?.to_vec())?;
-            let recipient = if tag == 1 {
+            let recipient = if tag == 1 || tag == 4 {
                 Some(take(input, 32)?.try_into()?)
             } else {
                 None

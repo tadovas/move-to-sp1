@@ -276,6 +276,81 @@ impl<'ctx> Translator<'ctx, '_> {
                 fr.push(digest, Type::Vector(Box::new(Type::U8)));
             }
 
+            // ---- address balances (funds accumulators; runtime/sui/src/accumulator.rs)
+            "funds_accumulator::add_to_accumulator_address" => {
+                let (value, _) = fr.pop()?; // T
+                let (recipient, _) = fr.pop()?;
+                fr.pop()?; // the accumulator's address: derived from recipient and T
+                let (name, len) = self.const_bytes(t(0).canonical(self.prog).as_bytes());
+                let args = [
+                    self.type_desc(&t(0))?.into(),
+                    name.into(),
+                    i64t.const_int(len, false).into(),
+                    self.spill(value)?.into(),
+                    self.spill(recipient)?.into(),
+                ];
+                self.call_runtime("move_rt_sui_accumulator_add", None, &args)?;
+            }
+            "funds_accumulator::withdraw_from_accumulator_address" => {
+                let (value, _) = fr.pop()?; // u256
+                let (owner, _) = fr.pop()?;
+                fr.pop()?; // accumulator address
+                let (name, len) = self.const_bytes(t(0).canonical(self.prog).as_bytes());
+                let lty = self.llvm_type(&t(0))?;
+                let out = self.builder.build_alloca(lty, "funds")?;
+                let args = [
+                    self.type_desc(&t(0))?.into(),
+                    name.into(),
+                    i64t.const_int(len, false).into(),
+                    self.spill(owner)?.into(),
+                    self.spill(value)?.into(),
+                    out.into(),
+                ];
+                self.call_runtime("move_rt_sui_accumulator_withdraw", None, &args)?;
+                fr.push(self.builder.build_load(lty, out, "")?, t(0));
+            }
+
+            // ---- signatures (runtime/sui/src/crypto.rs)
+            "ecdsa_k1::secp256k1_ecrecover" | "ecdsa_r1::secp256r1_ecrecover" => {
+                let (hash, _) = fr.pop()?; // u8
+                let (msg, _) = fr.pop()?; // &vector<u8>
+                let (sig, _) = fr.pop()?; // &vector<u8>
+                let rt = if name.starts_with("ecdsa_k1") {
+                    "move_rt_sui_secp256k1_ecrecover"
+                } else {
+                    "move_rt_sui_secp256r1_ecrecover"
+                };
+                let pk = self.runtime_bytes(rt, vec![sig.into(), msg.into(), hash.into()])?;
+                fr.push(pk, Type::Vector(Box::new(Type::U8)));
+            }
+            "ecdsa_k1::decompress_pubkey" => {
+                let (pk, _) = fr.pop()?;
+                let out =
+                    self.runtime_bytes("move_rt_sui_secp256k1_decompress_pubkey", vec![pk.into()])?;
+                fr.push(out, Type::Vector(Box::new(Type::U8)));
+            }
+            "ecdsa_k1::secp256k1_verify" | "ecdsa_r1::secp256r1_verify" => {
+                let (hash, _) = fr.pop()?;
+                let (msg, _) = fr.pop()?;
+                let (pk, _) = fr.pop()?;
+                let (sig, _) = fr.pop()?;
+                let rt = if name.starts_with("ecdsa_k1") {
+                    "move_rt_sui_secp256k1_verify"
+                } else {
+                    "move_rt_sui_secp256r1_verify"
+                };
+                let ok =
+                    self.runtime_bool(rt, &[sig.into(), pk.into(), msg.into(), hash.into()])?;
+                fr.push(ok, Type::Bool);
+            }
+            "hmac::hmac_sha3_256" => {
+                let (msg, _) = fr.pop()?;
+                let (key, _) = fr.pop()?;
+                let out =
+                    self.runtime_bytes("move_rt_sui_hmac_sha3_256", vec![key.into(), msg.into()])?;
+                fr.push(out, Type::Vector(Box::new(Type::U8)));
+            }
+
             // ---- types / address
             "types::is_one_time_witness" => {
                 fr.pop()?;

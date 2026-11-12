@@ -3,7 +3,9 @@
 //! Recorded during the run and committed to the public values after the entry results by
 //! `move_rt_finish`, so a proof attests to them. Encoding (BCS):
 //! `vector<Effect>` where each effect is `tag: u8, type: String (canonical name), [recipient: address], value: vector<u8>`
-//! with tags 0 = event, 1 = transfer, 2 = share, 3 = freeze, and `value` the BCS of the object.
+//! with tags 0 = event, 1 = transfer, 2 = share, 3 = freeze, and `value` the BCS of the object;
+//! tag 4 = accumulator (address balance) with `recipient` the balance owner and `value`
+//! `op: u8 (0 merge, 1 split), amount: u64`.
 
 use alloc::vec::Vec;
 
@@ -19,6 +21,32 @@ const EVENT: u8 = 0;
 const TRANSFER: u8 = 1;
 const SHARE: u8 = 2;
 const FREEZE: u8 = 3;
+const ACCUMULATOR: u8 = 4;
+
+/// An address-balance deposit (`MERGE`) or withdrawal (`SPLIT`) of `amount` for `owner`.
+///
+/// # Safety
+/// `name` points to `name_len` bytes.
+pub(crate) unsafe fn record_accumulator(
+    name: *const u8,
+    name_len: u64,
+    owner: &Address,
+    op: u8,
+    amount: u64,
+) {
+    // SAFETY: guaranteed by the caller.
+    let name = unsafe { core::slice::from_raw_parts(name, name_len as usize) };
+    LOG.with(|(n, out)| {
+        *n += 1;
+        out.push(ACCUMULATOR);
+        bcs::uleb128(name.len() as u64, out);
+        out.extend_from_slice(name);
+        out.extend_from_slice(owner);
+        bcs::uleb128(9, out);
+        out.push(op);
+        out.extend_from_slice(&amount.to_le_bytes());
+    });
+}
 
 /// (number of effects, their encoding)
 static LOG: Global<(u64, Vec<u8>)> = Global::new((0, Vec::new()));

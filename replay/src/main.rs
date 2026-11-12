@@ -113,9 +113,11 @@ async fn main() -> Result<()> {
     for i in pt["inputs"].as_array().context("inputs")? {
         match i["kind"].as_str() {
             Some("PURE" | "SHARED" | "IMMUTABLE_OR_OWNED") => {}
-            Some("FUNDS_WITHDRAWAL") => {
-                bail!("not supported yet: a FUNDS_WITHDRAWAL input (address-balance withdrawal)")
-            }
+            Some("FUNDS_WITHDRAWAL") => ensure!(
+                i["fundsWithdrawal"]["source"] == "SENDER",
+                "not supported yet: a FUNDS_WITHDRAWAL input from {}",
+                i["fundsWithdrawal"]["source"]
+            ),
             k => bail!("not supported yet: input kind {}", k.unwrap_or("?")),
         }
     }
@@ -237,7 +239,15 @@ async fn main() -> Result<()> {
         "ids_created": 0,
     })
     .to_string();
-    let ptb = ptb_json(pt, &data["gasPayment"], epoch, &fx["gasUsed"], &packages)?;
+    let sender = tx["sender"]["address"].as_str().context("sender")?;
+    let ptb = ptb_json(
+        pt,
+        sender,
+        &data["gasPayment"],
+        epoch,
+        &fx["gasUsed"],
+        &packages,
+    )?;
     std::fs::write(dir.join("ctx.json"), &ctx)?;
     std::fs::write(dir.join("ptb.json"), serde_json::to_string_pretty(&ptb)?)?;
 
@@ -307,17 +317,7 @@ async fn main() -> Result<()> {
     std::fs::write(dir.join("state_out.bin"), &output.state_out)?;
 
     let ok = compare(&objects, &output, effects)?;
-    let accumulator = fx["changedObjects"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|c| c["outputState"] == "OUTPUT_OBJECT_STATE_ACCUMULATOR_WRITE")
-        .count();
-    if accumulator > 0 {
-        println!(
-            "  {accumulator} address-balance write(s) (accumulators, e.g. gas paid from the balance): not modelled, not compared"
-        );
-    }
+    let ok = compare_balances(fx, &data["gasPayment"], &objects, &output)? && ok;
     let gas = &fx["gasUsed"];
     println!(
         "gas (from chain, not computed by the replay): computation {}, storage {}, rebate {}",
@@ -365,6 +365,82 @@ fn compare_failure(err: &Value, outcome: &Outcome, packages: &Packages) -> Resul
     ensure!(ok, "DIFF: the replay does not fail like the chain");
     println!("MATCH: fails exactly as on mainnet (state reverted there; replay output discarded)");
     Ok(())
+}
+
+/// Address balances: the replay's net deposits/withdrawals per (owner, balance type) against
+/// the chain's accumulator writes. Gas paid from an address balance comes from the chain's gas
+/// figures (gas is not metered), as does the absorption of gas coins into it.
+fn compare_balances(
+    fx: &Value,
+    gas: &Value,
+    input: &[StateObject],
+    output: &movevm::Output,
+) -> Result<bool> {
+    let mut chain_net: BTreeMap<(String, String), i128> = BTreeMap::new();
+    for c in fx["changedObjects"].as_array().into_iter().flatten() {
+        let w = &c["accumulatorWrite"];
+        if w.is_null() {
+            continue;
+        }
+        let amount = w["integerValue"]
+            .as_str()
+            .and_then(|v| v.parse::<i128>().ok())
+            .context("accumulator amount")?;
+        let signed = match w["operation"].as_str() {
+            Some("MERGE") => amount,
+            Some("SPLIT") => -amount,
+            op => bail!("unknown accumulator operation {op:?}"),
+        };
+        let key = (
+            norm(w["address"].as_str().context("address")?),
+            canonical_type(w["accumulatorType"].as_str().context("type")?)?,
+        );
+        *chain_net.entry(key).or_default() += signed;
+    }
+    let mut ours: BTreeMap<(String, String), i128> = BTreeMap::new();
+    for r in output.effect_records.iter().filter(|r| r.tag == 4) {
+        let amount = u64::from_le_bytes(r.bcs[1..9].try_into()?) as i128;
+        let owner = hex(&r.recipient.context("accumulator owner")?);
+        *ours.entry((owner, r.type_name.clone())).or_default() +=
+            if r.bcs[0] == 0 { amount } else { -amount };
+    }
+    // gas from the address balance (no gas coins, or a reservation absorbing them)
+    let coins: Vec<&Value> = gas["objects"].as_array().into_iter().flatten().collect();
+    let reservation = coins.first().is_some_and(|c| num(&c["version"]) == Some(0));
+    if coins.is_empty() || reservation {
+        let owner = norm(gas["owner"].as_str().context("gas owner")?);
+        let sui = canonical_type("0x2::balance::Balance<0x2::sui::SUI>")?;
+        let cost = |k: &str| num(&fx["gasUsed"][k]).map(|v| v as i128).unwrap_or(0);
+        let mut net = cost("storageRebate") - cost("computationCost") - cost("storageCost");
+        for c in coins.iter().skip(1) {
+            let id = addr(c["objectId"].as_str().context("gas coin")?)?;
+            if let Some(o) = input.iter().find(|o| o.id == id) {
+                net += u64::from_le_bytes(o.bcs[32..40].try_into()?) as i128;
+            }
+        }
+        *ours.entry((owner, sui)).or_default() += net;
+    }
+    ours.retain(|_, v| *v != 0);
+    chain_net.retain(|_, v| *v != 0);
+    if chain_net.is_empty() && ours.is_empty() {
+        return Ok(true);
+    }
+    println!("address balances (net change, chain vs replay; gas part from chain):");
+    let keys: BTreeSet<&(String, String)> = chain_net.keys().chain(ours.keys()).collect();
+    let mut ok = true;
+    for k in keys {
+        let (c, o) = (chain_net.get(k), ours.get(k));
+        let verdict = if c == o { "ok  " } else { "DIFF" };
+        ok &= c == o;
+        println!(
+            "  {verdict} {} {}: {:+} vs {:+}",
+            short(&k.0),
+            short_type(&k.1),
+            c.copied().unwrap_or(0),
+            o.copied().unwrap_or(0)
+        );
+    }
+    Ok(ok)
 }
 
 /// Compare the replay's written objects and events with the chain's.
@@ -635,6 +711,7 @@ fn module_address(modules: &[Vec<u8>]) -> Result<String> {
 /// Gas coins are charged the chain's net gas cost (not computed here).
 fn ptb_json(
     pt: &Value,
+    sender: &str,
     gas: &Value,
     epoch: &Value,
     gas_used: &Value,
@@ -647,6 +724,13 @@ fn ptb_json(
         .map(|i| match i["kind"].as_str() {
             Some("PURE") => {
                 Ok(json!({ "pure": format!("base64:{}", i["pure"].as_str().context("pure")?) }))
+            }
+            // `Withdrawal<Balance<T>> { owner: sender, limit: amount as u256 }`
+            Some("FUNDS_WITHDRAWAL") => {
+                let amount = num(&i["fundsWithdrawal"]["amount"]).context("withdrawal amount")?;
+                let mut limit = [0u8; 32];
+                limit[..8].copy_from_slice(&amount.to_le_bytes());
+                Ok(json!({ "pure": format!("0x{}{}", hex(&addr(sender)?), hex(&limit)) }))
             }
             _ => Ok(json!({ "object": i["objectId"].as_str().context("objectId")? })),
         })

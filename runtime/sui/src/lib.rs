@@ -19,7 +19,9 @@ extern crate alloc;
 // The core provides the SP1 entry point, allocation and std natives.
 pub use move_rt_core;
 
+mod accumulator;
 mod clock;
+mod crypto;
 mod effects;
 mod hash;
 mod ptb;
