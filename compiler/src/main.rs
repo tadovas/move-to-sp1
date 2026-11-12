@@ -40,10 +40,11 @@ struct Input {
     /// Use this runtime library instead of the embedded one.
     #[arg(long)]
     runtime: Option<PathBuf>,
-    /// Optimisation: SHA-256 object/dynamic-field IDs (SP1 precompile) instead of Sui's
-    /// Blake2b ones. Unique and deterministic, but not the IDs Sui would assign.
+    /// Enable all optimisations that deviate from exact Sui behaviour ("fidelity points"):
+    /// `ids` — SHA-256 object/dynamic-field IDs (SP1 precompile) instead of Sui's Blake2b
+    /// ones (unique and deterministic, but not the IDs Sui would assign).
     #[arg(long)]
-    fast_ids: bool,
+    fast: bool,
 }
 
 #[derive(Subcommand)]
@@ -168,9 +169,7 @@ fn build_elf(
         &ctx,
         &prog,
         tm.get_target_data(),
-        translate::Options {
-            fast_ids: input.fast_ids,
-        },
+        translate::Options { fast: input.fast },
     );
     let abi = translator.compile(entry)?;
     if let Some(p) = emit_llvm {

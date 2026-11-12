@@ -86,7 +86,7 @@ pub extern "C" fn move_rt_sui_fresh_id(out: &mut Address) {
     *out = fresh_id(false);
 }
 
-/// `--fast-ids`: the same derivation with SHA-256 (SP1 precompile) instead of Blake2b.
+/// `--fast`: the same derivation with SHA-256 (SP1 precompile) instead of Blake2b.
 #[unsafe(no_mangle)]
 pub extern "C" fn move_rt_sui_fresh_id_fast(out: &mut Address) {
     *out = fresh_id(true);

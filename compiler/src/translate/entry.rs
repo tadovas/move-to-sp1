@@ -134,7 +134,7 @@ impl<'ctx> Translator<'ctx, '_> {
         let effects = names(&effect_types);
         let json = json!({
             "entry": name, "params": params, "returns": returns, "effects": effects, "types": types,
-            "ids": if self.options.fast_ids { "fast" } else { "sui" },
+            "fast": self.options.fast_points(),
         });
         Ok(EntryAbi {
             name,

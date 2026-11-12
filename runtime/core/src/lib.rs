@@ -10,6 +10,7 @@
 //! * `desc`    — type descriptors and value layout (shared with the compiler)
 //! * `bcs`     — BCS encode/decode of values
 //! * `print`   — `debug::print` formatting
+//! * `fidelity` — cycle tracking of exact-vs-fast fidelity points (`tracked!`)
 //! * `global`  — single-threaded global state for platform runtimes
 //! * `natives` — std (0x1) natives implemented here (bcs, debug, hash, string)
 #![no_std]
@@ -20,6 +21,7 @@ extern crate alloc;
 
 pub mod bcs;
 pub mod desc;
+pub mod fidelity;
 pub mod global;
 mod natives;
 pub mod print;

@@ -22,7 +22,7 @@ pub fn blake2b256(parts: &[&[u8]]) -> Address {
     h.finalize().into()
 }
 
-/// SHA-256 of the concatenation of `parts` (SP1 precompile): for `--fast-ids`, where IDs only
+/// SHA-256 of the concatenation of `parts` (SP1 precompile): for `--fast`, where IDs only
 /// need to be unique, not equal to Sui's.
 pub fn sha256(parts: &[&[u8]]) -> Address {
     use sha2::Sha256;
@@ -33,13 +33,16 @@ pub fn sha256(parts: &[&[u8]]) -> Address {
     h.finalize().into()
 }
 
-/// The ID hash: Sui's Blake2b-256, or SHA-256 for `--fast-ids`.
+/// The ID hash: Sui's Blake2b-256, or SHA-256 for `--fast` (fidelity point `ids`).
 pub fn id_hash(fast: bool, parts: &[&[u8]]) -> Address {
-    if fast {
-        sha256(parts)
-    } else {
-        blake2b256(parts)
-    }
+    move_rt_core::tracked!(
+        "ids",
+        if fast {
+            sha256(parts)
+        } else {
+            blake2b256(parts)
+        }
+    )
 }
 
 /// `sui::hash::blake2b256(&vector<u8>)` (software: SP1 has no Blake2b precompile).

@@ -361,9 +361,9 @@ impl<'ctx> Translator<'ctx, '_> {
         Ok(Type::Struct(id, vec![]))
     }
 
-    /// The ID-deriving runtime function: Sui's derivation, or its `--fast-ids` variant.
+    /// The ID-deriving runtime function: Sui's derivation, or its `--fast` variant.
     fn id_fn(&self, exact: &'static str) -> &'static str {
-        match (self.options.fast_ids, exact) {
+        match (self.options.fast, exact) {
             (false, _) => exact,
             (true, "move_rt_sui_fresh_id") => "move_rt_sui_fresh_id_fast",
             (true, _) => "move_rt_sui_df_hash_fast",

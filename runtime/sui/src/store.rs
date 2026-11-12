@@ -65,7 +65,7 @@ pub unsafe extern "C" fn move_rt_sui_df_hash(
     *out = unsafe { field_id(false, parent, kd, k, tag, tag_len) };
 }
 
-/// `--fast-ids`: the same derivation with SHA-256 (SP1 precompile) instead of Blake2b.
+/// `--fast`: the same derivation with SHA-256 (SP1 precompile) instead of Blake2b.
 ///
 /// # Safety
 /// As for `move_rt_sui_df_hash`.

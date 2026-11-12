@@ -22,6 +22,8 @@ pub struct Abi {
     pub returns: Vec<String>,
     /// Types that may appear in effects (events, transferred objects).
     pub effects: Vec<String>,
+    /// Fidelity points compiled in their fast (`--fast`) variant; the rest are exact.
+    pub fast: Vec<String>,
     types: HashMap<String, TypeDef>,
 }
 
@@ -81,6 +83,7 @@ impl Abi {
             params: strings(&j["params"]),
             returns: strings(&j["returns"]),
             effects: strings(&j["effects"]),
+            fast: strings(&j["fast"]),
             types,
         })
     }

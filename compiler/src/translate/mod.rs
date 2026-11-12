@@ -60,9 +60,20 @@ pub use types::Type;
 /// Translation options. Defaults are faithful to Sui; optimisations are opt-in.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Options {
-    /// Derive object and dynamic-field IDs with SHA-256 (SP1 precompile) instead of Sui's
-    /// Blake2b-256: unique and deterministic, but not equal to the IDs Sui would assign.
-    pub fast_ids: bool,
+    /// Use the fast variant of every fidelity point (see `FIDELITY_POINTS`).
+    pub fast: bool,
+}
+
+/// Places where exact Sui behaviour has a faster, deviating alternative (`--fast`). The
+/// runtime reports the cycles each one costs (`runtime/core/src/fidelity.rs`).
+/// * `ids`: object / dynamic-field IDs — Sui's Blake2b-256, or SHA-256 on the SP1 precompile
+pub const FIDELITY_POINTS: &[&str] = &["ids"];
+
+impl Options {
+    /// Fidelity points switched to their fast variant.
+    pub fn fast_points(&self) -> &'static [&'static str] {
+        if self.fast { FIDELITY_POINTS } else { &[] }
+    }
 }
 
 /// A function instance: a definition plus concrete type arguments.

@@ -78,8 +78,31 @@ enum Outcome {
 /// Failure record committed by the runtime (`runtime/core/src/lib.rs`, `ABORT_MAGIC`).
 const ABORT_MAGIC: &[u8; 8] = b"MOVEABRT";
 
+/// Measured cost per call of each fidelity point's fast (`--fast`) variant, used to project
+/// what an exact build would cost with `--fast`. Calibrated on the DeepBook v3 demo
+/// (`examples/deepbook-v3-demo`, 165 ID derivations); real costs vary a little with input size
+/// (projection vs measurement there: 552,733 vs 557,181 cycles, -0.8%).
+const FAST_COST_PER_CALL: &[(&str, u64)] = &[("ids", 1_627)];
+
+/// Cycles and invocation count of one fidelity point in an execution.
+struct FidelityCost {
+    point: String,
+    cycles: u64,
+    calls: u64,
+}
+
 /// Execute an ELF in SP1 (no proof). Returns the outcome and the cycle count.
 async fn execute(client: &LightProver, elf: &[u8], stdin: SP1Stdin) -> Result<(Outcome, u64)> {
+    let (outcome, cycles, _) = execute_tracked(client, elf, stdin).await?;
+    Ok((outcome, cycles))
+}
+
+/// Like `execute`, also returning the cycles spent in each fidelity point.
+async fn execute_tracked(
+    client: &LightProver,
+    elf: &[u8],
+    stdin: SP1Stdin,
+) -> Result<(Outcome, u64, Vec<FidelityCost>)> {
     let (public_values, report) = client
         .execute(Elf::Dynamic(Arc::from(elf)), stdin)
         .await
@@ -103,7 +126,21 @@ async fn execute(client: &LightProver, elf: &[u8], stdin: SP1Stdin) -> Result<(O
         (_, Some((_, status, loc))) => Outcome::VmError(status, loc),
         (exit, None) => Outcome::Failed(exit),
     };
-    Ok((outcome, report.total_instruction_count()))
+    let mut fidelity: Vec<FidelityCost> = report
+        .cycle_tracker
+        .iter()
+        .filter_map(|(name, cycles)| {
+            let point = name.strip_prefix("fidelity:")?;
+            let calls = report.invocation_tracker.get(name).copied().unwrap_or(0);
+            Some(FidelityCost {
+                point: point.to_string(),
+                cycles: *cycles,
+                calls,
+            })
+        })
+        .collect();
+    fidelity.sort_by(|a, b| a.point.cmp(&b.point));
+    Ok((outcome, report.total_instruction_count(), fidelity))
 }
 
 async fn run(elf: PathBuf, args: Vec<String>, compact: bool) -> Result<()> {
@@ -130,7 +167,7 @@ async fn run(elf: PathBuf, args: Vec<String>, compact: bool) -> Result<()> {
     // Light prover: executes (and verifies) without building proving keys.
     let client = ProverClient::builder().light().build().await;
     let t = std::time::Instant::now();
-    let (outcome, cycles) = execute(&client, &bytes, stdin).await?;
+    let (outcome, cycles, fidelity) = execute_tracked(&client, &bytes, stdin).await?;
     let elapsed = t.elapsed();
     let public_values = match outcome {
         Outcome::Success(pv) => pv,
@@ -177,6 +214,40 @@ async fn run(elf: PathBuf, args: Vec<String>, compact: bool) -> Result<()> {
         }
     }
     println!("cycles: {cycles}  (executed in {elapsed:.2?})");
+    for f in &fidelity {
+        let mode = if abi.fast.contains(&f.point) {
+            "fast"
+        } else {
+            "exact"
+        };
+        println!(
+            "  fidelity `{}` ({mode}): {} cycles in {} calls ({:.1}%, {} cycles/call)",
+            f.point,
+            f.cycles,
+            f.calls,
+            100.0 * f.cycles as f64 / cycles.max(1) as f64,
+            f.cycles / f.calls.max(1),
+        );
+    }
+    // Projection for exact builds: replace each exact point's measured cycles with the
+    // calibrated cost of its fast variant.
+    let exact: Vec<&FidelityCost> = fidelity
+        .iter()
+        .filter(|f| !abi.fast.contains(&f.point))
+        .collect();
+    if !exact.is_empty() {
+        let mut projected = cycles;
+        for f in &exact {
+            let per_call = FAST_COST_PER_CALL
+                .iter()
+                .find(|(p, _)| *p == f.point)
+                .map(|(_, c)| *c);
+            if let Some(per_call) = per_call {
+                projected = projected - f.cycles + f.calls * per_call;
+            }
+        }
+        println!("  projected with --fast: ~{projected} cycles (estimate, not measured)");
+    }
     Ok(())
 }
 
