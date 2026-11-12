@@ -2,7 +2,7 @@
 //! (`sui-move-natives/src/crypto`): invalid inputs give `false` from `*_verify`, and abort
 //! `ecrecover` / `decompress_pubkey` with the module's error codes.
 //!
-//! secp256k1 and secp256r1 use SP1's patched `k256` / `p256`, which run on its elliptic-curve
+//! secp256k1, secp256r1 and ed25519 use SP1's patched `k256` / `p256` / `curve25519-dalek`, which run on its elliptic-curve
 //! precompiles; Keccak-256 and SHA-256 use its hash precompiles.
 
 use core::mem::MaybeUninit;
@@ -133,6 +133,25 @@ pub extern "C" fn move_rt_sui_secp256r1_verify(
         let vk = VerifyingKey::from_sec1_bytes(pk.bytes()).ok()?;
         let d = digest(msg.bytes(), hash)?;
         vk.verify_prehash(&d, &s).ok()
+    })()
+    .is_some()
+}
+
+/// `ed25519::ed25519_verify(signature, public_key, msg)`. Sui verifies with ZIP-215 rules;
+/// this uses `ed25519-dalek`'s (cofactorless) verification, which agrees on all honestly
+/// generated signatures and may differ on adversarial edge cases (small-order keys,
+/// non-canonical encodings).
+#[unsafe(no_mangle)]
+pub extern "C" fn move_rt_sui_ed25519_verify(
+    sig: &VecHeader,
+    pk: &VecHeader,
+    msg: &VecHeader,
+) -> bool {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    (|| {
+        let s = Signature::from_slice(sig.bytes()).ok()?;
+        let vk = VerifyingKey::from_bytes(pk.bytes().try_into().ok()?).ok()?;
+        vk.verify(msg.bytes(), &s).ok()
     })()
     .is_some()
 }

@@ -343,6 +343,16 @@ impl<'ctx> Translator<'ctx, '_> {
                     self.runtime_bool(rt, &[sig.into(), pk.into(), msg.into(), hash.into()])?;
                 fr.push(ok, Type::Bool);
             }
+            "ed25519::ed25519_verify" => {
+                let (msg, _) = fr.pop()?;
+                let (pk, _) = fr.pop()?;
+                let (sig, _) = fr.pop()?;
+                let ok = self.runtime_bool(
+                    "move_rt_sui_ed25519_verify",
+                    &[sig.into(), pk.into(), msg.into()],
+                )?;
+                fr.push(ok, Type::Bool);
+            }
             "hmac::hmac_sha3_256" => {
                 let (msg, _) = fr.pop()?;
                 let (key, _) = fr.pop()?;

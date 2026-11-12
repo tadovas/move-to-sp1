@@ -17,3 +17,4 @@ tiny-keccak.workspace = true
 blake2 = { version = "0.10", default-features = false }
 k256 = { version = "0.13.4", default-features = false, features = ["ecdsa", "alloc"] }
 p256 = { version = "0.13.2", default-features = false, features = ["ecdsa", "alloc"] }
+ed25519-dalek = { version = "2.1", default-features = false }
