@@ -33,8 +33,29 @@ struct Child {
 
 static STORE: Global<BTreeMap<Address, Child>> = Global::new(BTreeMap::new());
 
+/// Partial state (replaying a transaction from chain): only the children fetched so far are
+/// in the store, so a child that is neither stored nor known to be absent is reported as
+/// missing (abort location `move2sp1::missing::<id>`), for the replay tool to fetch it.
+/// `None`: the state is complete.
+static PARTIAL: Global<Option<BTreeMap<Address, ()>>> = Global::new(None);
+
+pub(crate) fn set_partial(absent: Vec<Address>) {
+    PARTIAL.with(|p| *p = Some(absent.into_iter().map(|a| (a, ())).collect()));
+}
+
+/// In partial state, report `id` as missing unless it is stored or known to be absent.
+fn ensure_known(id: &Address) {
+    let unknown = PARTIAL.with(|p| p.as_ref().is_some_and(|absent| !absent.contains_key(id)))
+        && !STORE.with(|s| s.contains_key(id));
+    if unknown {
+        let hex: alloc::string::String = id.iter().map(|b| alloc::format!("{b:02x}")).collect();
+        abort_in(&alloc::format!("move2sp1::missing::{hex}"), 0);
+    }
+}
+
 /// Look up child `id` of `parent`, checking it has type `d`.
 fn find(parent: &Address, id: &Address, d: &TypeDesc) -> *mut u8 {
+    ensure_known(id);
     let found = STORE.with(|s| {
         s.get(id)
             .map(|c| (c.parent == *parent, ptr::eq(c.desc, d), c.data))
@@ -120,6 +141,7 @@ pub unsafe extern "C" fn move_rt_sui_df_add(parent: &Address, d: &TypeDesc, chil
     unsafe { ptr::copy_nonoverlapping(child, data, size) };
     // SAFETY: objects start with `id: UID`, i.e. their 32-byte address.
     let id: Address = unsafe { *(data as *const Address) };
+    ensure_known(&id); // a child unknown to a partial state may exist on chain
     let exists = STORE.with(|s| {
         s.insert(
             id,
@@ -157,11 +179,18 @@ pub unsafe extern "C" fn move_rt_sui_df_remove(
     // SAFETY: the stored child is `d.size` initialized bytes; `out` has room for them.
     unsafe { ptr::copy_nonoverlapping(data, out, d.size() as usize) };
     STORE.with(|s| s.remove(id));
+    // known from now on: absent unless re-added
+    PARTIAL.with(|p| {
+        if let Some(absent) = p.as_mut() {
+            absent.insert(*id, ());
+        }
+    });
 }
 
 /// `has_child_object(parent, id)` (`d` null) / `has_child_object_with_ty<Child>` (`d` set).
 #[unsafe(no_mangle)]
 pub extern "C" fn move_rt_sui_df_has(parent: &Address, id: &Address, d: *const TypeDesc) -> bool {
+    ensure_known(id);
     STORE.with(|s| {
         s.get(id)
             .is_some_and(|c| c.parent == *parent && (d.is_null() || ptr::eq(c.desc, d)))

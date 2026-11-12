@@ -11,6 +11,10 @@
 //! `kind (u8: 0 owned, 1 shared, 2 dynamic-field child) || id (32) || owner or parent (32;
 //! zero for shared) || canonical type name (ULEB128 len + bytes) || BCS value (ULEB128 len + bytes)`.
 //!
+//! An input snapshot may end with `partial (u8) || ULEB128 count || absent IDs (32 each)`:
+//! a state fetched from chain, where unknown dynamic-field children are reported rather than
+//! treated as absent (see `store::set_partial`). Output snapshots never have it.
+//!
 //! Objects are rebuilt in memory through the program's type registry (canonical name ->
 //! descriptor, emitted by the compiler for every type that can reach the store). Objects of
 //! types the program never touches are passed through unchanged.
@@ -118,6 +122,12 @@ pub extern "C" fn move_rt_start() {
                 opaque.push((id, entry_start[..consumed].to_vec()));
             }
         }
+    }
+    if !input.is_empty() && take(&mut input, 1)[0] == 1 {
+        let absent = (0..read_uleb(&mut input))
+            .map(|_| take(&mut input, 32).try_into().unwrap())
+            .collect();
+        store::set_partial(absent);
     }
     SNAPSHOT.with(|s| *s = (hash, opaque));
 }
