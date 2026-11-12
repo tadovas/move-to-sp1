@@ -367,7 +367,10 @@ impl Abi {
                     ["merge", "split"][(value[0] & 1) as usize]
                 ))
             } else if self.types.contains_key(&ty) {
-                self.decode(&ty, &mut value)?
+                // for display only: fall back to hex if the schema does not fit
+                let raw = value;
+                self.decode(&ty, &mut value)
+                    .unwrap_or_else(|e| Out::Str(format!("{} (undecoded: {e})", hex(raw))))
             } else {
                 Out::Str(hex(value))
             };
