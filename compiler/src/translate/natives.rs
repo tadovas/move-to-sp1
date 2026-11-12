@@ -28,12 +28,24 @@ impl<'ctx> Translator<'ctx, '_> {
         Ok(())
     }
 
-    /// An unsupported native: recorded (reported once translation finishes, so all of them
-    /// are listed at once) and emitted as a trap with placeholder results.
+    /// An unsupported native: compiled to an abort at location
+    /// `move2sp1::unsupported::<module>::<function>` (so a program fails only if it actually
+    /// calls it), and listed in the program ABI (`unsupported_natives`).
     fn missing_native(&mut self, fr: &mut Frame<'ctx>, f: &FnInst, name: String) -> Result<()> {
+        let (loc, len) = self.const_bytes(format!("move2sp1::unsupported::{name}").as_bytes());
         self.missing_natives.insert(name);
         let (params, returns) = self.signature(f)?;
         fr.pop_n(params.len())?;
+        let i64t = self.ctx.i64_type();
+        self.call_runtime(
+            "move_rt_abort",
+            None,
+            &[
+                i64t.const_zero().into(),
+                loc.into(),
+                i64t.const_int(len, false).into(),
+            ],
+        )?;
         self.builder.build_unreachable()?;
         let dead = self
             .ctx

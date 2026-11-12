@@ -20,6 +20,7 @@ extern crate alloc;
 pub use move_rt_core;
 
 mod accumulator;
+mod bls;
 mod clock;
 mod crypto;
 mod effects;

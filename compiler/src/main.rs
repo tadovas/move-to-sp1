@@ -120,6 +120,13 @@ fn main() -> Result<()> {
             };
             let program = move2sp1::build(&compiled, entry, &options)?;
             std::fs::write(&output, &program.elf)?;
+            let unsupported = program.abi.unsupported_natives();
+            if !unsupported.is_empty() {
+                eprintln!(
+                    "warning: unsupported natives reachable (they abort if called): {}",
+                    unsupported.join(", ")
+                );
+            }
             let abi = &program.abi;
             eprintln!(
                 "{} -> {} ({} bytes, entry {}({}) -> ({}))",

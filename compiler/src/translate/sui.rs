@@ -397,6 +397,78 @@ impl<'ctx> Translator<'ctx, '_> {
                     self.runtime_bool(rt, &[sig.into(), pk.into(), msg.into(), hash.into()])?;
                 fr.push(ok, Type::Bool);
             }
+            // ---- BLS12-381 (runtime/sui/src/bls.rs)
+            "bls12381::bls12381_min_sig_verify" | "bls12381::bls12381_min_pk_verify" => {
+                let (msg, _) = fr.pop()?;
+                let (pk, _) = fr.pop()?;
+                let (sig, _) = fr.pop()?;
+                let rt = if name.ends_with("min_sig_verify") {
+                    "move_rt_sui_bls12381_min_sig_verify"
+                } else {
+                    "move_rt_sui_bls12381_min_pk_verify"
+                };
+                let ok = self.runtime_bool(rt, &[sig.into(), pk.into(), msg.into()])?;
+                fr.push(ok, Type::Bool);
+            }
+            "group_ops::internal_validate" => {
+                let (bytes, _) = fr.pop()?;
+                let (ty, _) = fr.pop()?;
+                let ok =
+                    self.runtime_bool("move_rt_sui_group_validate", &[ty.into(), bytes.into()])?;
+                fr.push(ok, Type::Bool);
+            }
+            "group_ops::internal_add"
+            | "group_ops::internal_sub"
+            | "group_ops::internal_mul"
+            | "group_ops::internal_div" => {
+                let (b, _) = fr.pop()?;
+                let (a, _) = fr.pop()?;
+                let (ty, _) = fr.pop()?;
+                let (rt, flag) = match name {
+                    "group_ops::internal_add" => ("move_rt_sui_group_add", false),
+                    "group_ops::internal_sub" => ("move_rt_sui_group_add", true),
+                    "group_ops::internal_mul" => ("move_rt_sui_group_mul", false),
+                    _ => ("move_rt_sui_group_mul", true),
+                };
+                let flag = self.ctx.bool_type().const_int(flag as u64, false);
+                let out =
+                    self.runtime_bytes(rt, vec![ty.into(), a.into(), b.into(), flag.into()])?;
+                fr.push(out, Type::Vector(Box::new(Type::U8)));
+            }
+            "group_ops::internal_hash_to" => {
+                let (m, _) = fr.pop()?;
+                let (ty, _) = fr.pop()?;
+                let out =
+                    self.runtime_bytes("move_rt_sui_group_hash_to", vec![ty.into(), m.into()])?;
+                fr.push(out, Type::Vector(Box::new(Type::U8)));
+            }
+            "group_ops::internal_multi_scalar_mul" => {
+                let (elements, _) = fr.pop()?;
+                let (scalars, _) = fr.pop()?;
+                let (ty, _) = fr.pop()?;
+                let out = self.runtime_bytes(
+                    "move_rt_sui_group_msm",
+                    vec![ty.into(), scalars.into(), elements.into()],
+                )?;
+                fr.push(out, Type::Vector(Box::new(Type::U8)));
+            }
+            "group_ops::internal_convert" => {
+                let (e, _) = fr.pop()?;
+                let (to, _) = fr.pop()?;
+                let (from, _) = fr.pop()?;
+                let out = self.runtime_bytes(
+                    "move_rt_sui_group_convert",
+                    vec![from.into(), to.into(), e.into()],
+                )?;
+                fr.push(out, Type::Vector(Box::new(Type::U8)));
+            }
+            "group_ops::internal_sum" => {
+                let (terms, _) = fr.pop()?;
+                let (ty, _) = fr.pop()?;
+                let out =
+                    self.runtime_bytes("move_rt_sui_group_sum", vec![ty.into(), terms.into()])?;
+                fr.push(out, Type::Vector(Box::new(Type::U8)));
+            }
             "ed25519::ed25519_verify" => {
                 let (msg, _) = fr.pop()?;
                 let (pk, _) = fr.pop()?;

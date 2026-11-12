@@ -354,6 +354,11 @@ async fn main() -> Result<()> {
     let t = std::time::Instant::now();
     let run = executor.execute(&elf, &inputs).await?;
     let elapsed = t.elapsed();
+    if let Outcome::Abort { location, .. } = &run.outcome
+        && let Some(native) = location.strip_prefix("move2sp1::unsupported::")
+    {
+        bail!("not supported: the transaction calls the native {native} (not implemented)");
+    }
     println!(
         "executed in SP1: {} cycles ({elapsed:.2?}); input state sha256 {}",
         run.cycles,

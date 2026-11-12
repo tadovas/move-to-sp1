@@ -49,6 +49,16 @@ impl EntryAbi {
         self.json.to_string()
     }
 
+    /// Natives the program can reach but that are not implemented (they abort if called).
+    pub fn unsupported_natives(&self) -> Vec<String> {
+        self.json["unsupported_natives"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect()
+    }
+
     /// Add a field to the ABI JSON.
     pub(super) fn set(&mut self, key: &str, value: Vec<Value>) {
         self.json[key] = Value::Array(value);
@@ -285,6 +295,7 @@ impl<'ctx> Translator<'ctx, '_> {
         let json = json!({
             "entry": name, "params": params, "returns": returns, "effects": names(&self.effect_types),
             "effect_names": effect_names,
+            "unsupported_natives": self.missing_natives,
             "state": state, "types": types, "fast": self.options.fast_points(),
         });
         Ok(EntryAbi {

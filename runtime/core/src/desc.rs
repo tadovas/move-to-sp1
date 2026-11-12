@@ -182,6 +182,11 @@ impl VecHeader {
         items(self.data, self.len)
     }
 
+    /// The elements of a `vector<vector<_>>` (vector headers).
+    pub fn headers(&self) -> &[VecHeader] {
+        items(self.data as *const VecHeader, self.len)
+    }
+
     /// A fresh vector of `bytes.len() / elem_size` elements laid out in `bytes`.
     pub fn from_elems(bytes: &[u8], elem_size: usize) -> VecHeader {
         let mut v = VecHeader::from_bytes(bytes);

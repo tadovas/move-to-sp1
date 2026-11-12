@@ -176,18 +176,12 @@ impl<'ctx, 'p> Translator<'ctx, 'p> {
         Ok(Type::Struct(id, vec![]))
     }
 
-    /// Translate every queued function; report unsupported natives all at once.
+    /// Translate every queued function (unsupported natives become aborts; see
+    /// `missing_native`).
     fn drain(&mut self) -> Result<()> {
         while let Some(inst) = self.queue.pop_front() {
             self.translate_function(&inst)
                 .map_err(|e| anyhow!("in {}: {e:#}", self.instance_name(&inst)))?;
-        }
-        if !self.missing_natives.is_empty() {
-            let list: Vec<_> = self.missing_natives.iter().cloned().collect();
-            anyhow::bail!(
-                "unsupported native functions reached:\n  {}",
-                list.join("\n  ")
-            );
         }
         Ok(())
     }

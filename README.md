@@ -47,7 +47,7 @@ a zkVM is possible but costly (an interpreter loop per instruction, proven). mov
   * Sui fidelity: object IDs, dynamic-field IDs, type tags, BCS, events, transfers, shared and
     owned objects, dynamic fields, `TxContext` (sender, sponsor, epoch, gas price, fresh IDs),
     `Clock`, address balances (funds accumulator), crypto natives (secp256k1, secp256r1,
-    ed25519, HMAC, Blake2b, Keccak, SHA-2/3).
+    ed25519, BLS12-381 signatures and group operations, HMAC, Blake2b, Keccak, SHA-2/3).
 * **Unit tests in the zkVM**: `move2sp1 test` + `movevm test` run DeepBook v3's own test suite —
   **404/404 pass**, with the exact expected abort codes and locations.
 * **Transactions as data** (program *images*): an image compiles a set of functions plus a
@@ -72,9 +72,8 @@ a zkVM is possible but costly (an interpreter loop per instruction, proven). mov
 
 * **Whole checkpoints** (`scripts/replay-sample.py --checkpoint A-B`): every user transaction
   of 20 consecutive mainnet checkpoints (344,393,000–019, ~5 s of Sui, 572 transactions):
-  **571 byte-identical, 0 differences**; the remaining one needs a BLS12-381 signature check
-  (not implemented, stops cleanly). ~510k cycles per transaction on average, 2 min 48 s for all
-  572 (8 in parallel). Checkpoints from a month ago: 42/42. From May 2025: 60/61 (BLS again).
+  **all 572 byte-identical** (~510k cycles per transaction on average; 2 min 48 s for all 572,
+  8 in parallel). Checkpoints from a month ago: 42/42. From May 2025: 61/61.
 * **199 of 200** random recent mainnet transactions replayed byte-identically on the first run
   of the final sampler (`scripts/replay-sample.py 200`, 66 s with 8 in parallel; the one
   failure, a type added in a later package version, is fixed). Earlier samples found and fixed:
@@ -99,10 +98,11 @@ a zkVM is possible but costly (an interpreter loop per instruction, proven). mov
   Core proofs; "compressed" is SP1's constant-size recursive proof. A trivial program (`add`)
   takes ~22 s, so most of the time for typical transactions is the prover's fixed cost.
   Replay execution alone (no proof) takes 15–100 ms per transaction in SP1's executor.
-* Natives: **71 of 105** Sui framework natives implemented, counting those of older framework
+* Natives: **82 of 105** Sui framework natives implemented, counting those of older framework
   versions (`scripts/natives-coverage.py --history`; only system packages may declare natives, so
-  this list is complete). The rest are mostly heavy cryptography (BLS12-381, Groth16, group operations, Poseidon, VRF, VDF,
-  zkLogin, Nitro attestation) and stop with a clean "unsupported native" error at compile time.
+  this list is complete). The rest (Groth16, Poseidon, VRF, VDF, zkLogin, Nitro attestation,
+  bulletproofs, BLS12-381 pairings/GT, receiving and party transfers) compile to an abort, so a
+  transaction fails to replay only if it actually calls one — with a clean "not supported".
 
 ## What's faked, mocked, or not covered
 
@@ -133,6 +133,9 @@ data certified by Sui validators, but they bound what a proof means:
   XOR the chain identifier, "digest" = amount ‖ epoch ‖ `0xac…`) are decoded from that
   encoding — reverse-engineered from mainnet data, not from a spec — and become a fresh coin
   (as Sui's gas reservations do); what is left of it returns to the balance.
+* **BLS12-381** `group_ops`: scalars, G1, G2 and uncompressed G1 are implemented with Sui's
+  encodings; GT elements and pairings are not (their byte encoding in Sui's blst backend is not
+  reproduced) and abort as unsupported.
 * **ed25519** follows `ed25519-dalek` semantics; Sui uses ZIP-215 rules. They agree on all
   honestly generated signatures and may differ on adversarial edge cases.
 * **`--fast`** (opt-in, off by default): SHA-256 (an SP1 precompile) instead of Blake2b for
@@ -157,7 +160,7 @@ mainnet package (GraphQL) ─────────┘   translate/   (inkwell
   (de)serialize BCS, hash type tags, store objects and print values.
 * `runtime/` — `no_std` Rust, linked into every program: entry/exit, BCS, natives, the object
   store and dynamic fields, the PTB interpreter, effects, state snapshots. SP1 precompiles for
-  SHA-256, Keccak, secp256k1/r1, ed25519.
+  SHA-256, Keccak, secp256k1/r1, ed25519, BLS12-381.
 * `runner/` (`movevm`) — executes/proves ELFs with the SP1 SDK and decodes public values.
 * `replay/` (`sui-replay`) — the mainnet replay tool; `out/replay/cache/` caches every GraphQL
   response, so replays are reproducible offline.
