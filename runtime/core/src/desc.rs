@@ -140,6 +140,10 @@ impl FieldDesc {
     pub fn name(&self) -> &str {
         text(self.name, self.name_len)
     }
+    /// Byte offset of the field in its struct.
+    pub fn offset(&self) -> usize {
+        self.offset as usize
+    }
     pub fn ty(&self) -> &TypeDesc {
         // SAFETY: field descriptors always point at a valid type descriptor.
         unsafe { &*self.ty }
@@ -363,6 +367,15 @@ impl<'a> Slot<'a> {
             _slot: PhantomData,
         };
         (0..n).map(move |i| base.at(e, i * e.size as usize))
+    }
+
+    /// Store a copy of the value at `src` (of this slot's type), moved bitwise.
+    ///
+    /// # Safety
+    /// `src` points to an initialized value of this slot's type, not used afterwards.
+    pub unsafe fn move_from(self, src: *const u8) {
+        // SAFETY: both hold `size` bytes of the same type (guaranteed by the caller).
+        unsafe { core::ptr::copy_nonoverlapping(src, self.ptr, self.desc.size as usize) };
     }
 
     /// Store a fresh `vector<u8>` holding `bytes`.

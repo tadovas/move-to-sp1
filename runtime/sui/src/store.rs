@@ -453,6 +453,24 @@ pub extern "C" fn move_rt_sui_check_inputs() {
     }
 }
 
+/// The type of object `id`, if it is in the state.
+pub(crate) fn object_desc(id: &Address) -> Option<&'static TypeDesc> {
+    // SAFETY: stored descriptors are the program's constant descriptors.
+    INVENTORY.with(|inv| inv.objects.get(id).map(|o| unsafe { &*o.desc }))
+}
+
+/// Object `id` in place, without the ownership check (the gas coins, which may belong to a
+/// sponsor).
+pub(crate) fn object_in_place(id: &Address) -> Option<(*mut u8, &'static TypeDesc)> {
+    // SAFETY: stored descriptors are the program's constant descriptors.
+    INVENTORY.with(|inv| inv.objects.get(id).map(|o| (o.data, unsafe { &*o.desc })))
+}
+
+/// Delete object `id` from the state, without the ownership check (smashed gas coins).
+pub(crate) fn delete_object(id: &Address) {
+    INVENTORY.with(|inv| inv.objects.remove(id));
+}
+
 /// Whether object `id` is in the state.
 pub(crate) fn has_object(id: &Address) -> bool {
     INVENTORY.with(|inv| inv.objects.contains_key(id))

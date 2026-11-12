@@ -26,8 +26,14 @@ const IMM_REF: u64 = 1;
 const MUT_REF: u64 = 2;
 
 impl<'ctx> Translator<'ctx, '_> {
-    /// Translate an image: every instance in `entries` callable through the dispatch table.
-    pub fn compile_image(&mut self, entries: &[FnInst]) -> Result<EntryAbi> {
+    /// Translate an image: every instance in `entries` callable through the dispatch table;
+    /// objects of `types` can be loaded from the state too.
+    pub fn compile_image(&mut self, entries: &[FnInst], types: &[Type]) -> Result<EntryAbi> {
+        for ty in types {
+            if matches!(ty, Type::Struct(..) | Type::Enum(..)) {
+                self.note_state_type(ty);
+            }
+        }
         let mut fns = vec![];
         for inst in entries {
             fns.push((inst.clone(), self.function(inst)?));

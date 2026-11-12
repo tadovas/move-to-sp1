@@ -107,7 +107,10 @@ fn main() -> Result<()> {
             let entry = if publish {
                 Entry::Publish
             } else if !image.is_empty() {
-                Entry::Image(&image)
+                Entry::Image {
+                    functions: &image,
+                    types: &[],
+                }
             } else {
                 Entry::Function(&entry)
             };

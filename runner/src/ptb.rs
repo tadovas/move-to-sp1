@@ -2,12 +2,18 @@
 //! encoding out (`runtime/sui/src/ptb.rs`).
 //!
 //! ```json
-//! { "inputs":   [ {"object": "0x…"}, {"pure": "0x2a00000000000000"}, {"value": 42, "type": "u64"} ],
+//! { "gas":      {"price": 1000, "rgp": 1000, "budget": 0, "coins": ["0x…"], "charge": 0, "refund": 0},
+//!   "inputs":   [ {"object": "0x…"}, {"pure": "0x2a00000000000000"}, {"value": 42, "type": "u64"} ],
 //!   "commands": [ {"MoveCall": {"function": "0x…::pool::place_market_order<0x…::ns::NS, 0x…::usdc::USDC>",
-//!                               "args": [{"Input": 0}, {"Result": 0}, {"NestedResult": [1, 0]}, "GasCoin"]}} ] }
+//!                               "args": [{"Input": 0}, {"Result": 0}, {"NestedResult": [1, 0]}, "GasCoin"]}},
+//!                 {"TransferObjects": {"objects": [{"Result": 0}], "address": {"Input": 1}}},
+//!                 {"SplitCoins": {"coin": "GasCoin", "amounts": [{"Input": 2}]}},
+//!                 {"MergeCoins": {"coin": {"Input": 0}, "sources": [{"Result": 2}]}},
+//!                 {"MakeMoveVec": {"type": "u64", "elements": [{"Input": 2}]}} ] }
 //! ```
-//! Optional `"gas": {"price": 1000, "rgp": 1000, "budget": 0}` (default 0, as in Sui's unit
-//! tests) is what `tx_context::gas_price` etc. return; gas is not metered.
+//! `gas` is optional (all 0, as in Sui's unit tests): `price`/`rgp`/`budget` are what
+//! `tx_context` reports; gas is not metered — `coins` are smashed into the first, which is
+//! debited `charge` and credited `refund` after the commands (amounts supplied by the caller).
 //! Pure inputs are raw BCS (`0x` hex or `base64:`), or a JSON value with its type.
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -17,8 +23,20 @@ use crate::abi::Abi;
 
 pub fn encode(abi: &Abi, ptb: &Value) -> Result<Vec<u8>> {
     let mut out = vec![];
+    let gas = &ptb["gas"];
     for k in ["price", "rgp", "budget"] {
-        out.extend(ptb["gas"][k].as_u64().unwrap_or(0).to_le_bytes());
+        out.extend(gas[k].as_u64().unwrap_or(0).to_le_bytes());
+    }
+    let coins = gas["coins"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    uleb(coins.len() as u64, &mut out);
+    for c in coins {
+        out.extend(address(c.as_str().context("gas coin")?)?);
+    }
+    for k in ["charge", "refund"] {
+        out.extend(gas[k].as_u64().unwrap_or(0).to_le_bytes());
     }
     let inputs = ptb["inputs"]
         .as_array()
@@ -39,37 +57,71 @@ pub fn encode(abi: &Abi, ptb: &Value) -> Result<Vec<u8>> {
     let commands = ptb["commands"].as_array().context("PTB has no commands")?;
     uleb(commands.len() as u64, &mut out);
     for c in commands {
-        let call = c
-            .get("MoveCall")
-            .ok_or_else(|| anyhow!("unsupported command {c} (only MoveCall so far)"))?;
-        out.push(0);
-        let key = canonical_function(call["function"].as_str().context("MoveCall.function")?)?;
-        uleb(key.len() as u64, &mut out);
-        out.extend(key.as_bytes());
-        let args = call["args"]
-            .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or_default();
-        uleb(args.len() as u64, &mut out);
-        for a in args {
-            if a == "GasCoin" {
-                out.push(0);
-            } else if let Some(i) = a["Input"].as_u64() {
-                out.push(1);
-                out.extend((i as u16).to_le_bytes());
-            } else if let Some(i) = a["Result"].as_u64() {
-                out.push(2);
-                out.extend((i as u16).to_le_bytes());
-            } else if let Some([c, i]) = a["NestedResult"].as_array().map(Vec::as_slice) {
-                out.push(3);
-                out.extend((c.as_u64().context("NestedResult")? as u16).to_le_bytes());
-                out.extend((i.as_u64().context("NestedResult")? as u16).to_le_bytes());
-            } else {
-                bail!("bad argument {a}");
+        if let Some(call) = c.get("MoveCall") {
+            out.push(0);
+            let key = canonical_function(call["function"].as_str().context("MoveCall.function")?)?;
+            string(&key, &mut out);
+            args(&call["args"], &mut out)?;
+        } else if let Some(t) = c.get("TransferObjects") {
+            out.push(1);
+            args(&t["objects"], &mut out)?;
+            arg(&t["address"], &mut out)?;
+        } else if let Some(s) = c.get("SplitCoins") {
+            out.push(2);
+            arg(&s["coin"], &mut out)?;
+            args(&s["amounts"], &mut out)?;
+        } else if let Some(m) = c.get("MergeCoins") {
+            out.push(3);
+            arg(&m["coin"], &mut out)?;
+            args(&m["sources"], &mut out)?;
+        } else if let Some(v) = c.get("MakeMoveVec") {
+            out.push(4);
+            match v["type"].as_str() {
+                Some(t) => {
+                    out.push(1);
+                    string(&canonical_function(t)?, &mut out);
+                }
+                None => out.push(0),
             }
+            args(&v["elements"], &mut out)?;
+        } else {
+            bail!("unsupported command {c}");
         }
     }
     Ok(out)
+}
+
+fn string(s: &str, out: &mut Vec<u8>) {
+    uleb(s.len() as u64, out);
+    out.extend(s.as_bytes());
+}
+
+fn args(list: &Value, out: &mut Vec<u8>) -> Result<()> {
+    let list = list.as_array().map(Vec::as_slice).unwrap_or_default();
+    uleb(list.len() as u64, out);
+    for a in list {
+        arg(a, out)?;
+    }
+    Ok(())
+}
+
+fn arg(a: &Value, out: &mut Vec<u8>) -> Result<()> {
+    if a == "GasCoin" {
+        out.push(0);
+    } else if let Some(i) = a["Input"].as_u64() {
+        out.push(1);
+        out.extend((i as u16).to_le_bytes());
+    } else if let Some(i) = a["Result"].as_u64() {
+        out.push(2);
+        out.extend((i as u16).to_le_bytes());
+    } else if let Some([c, i]) = a["NestedResult"].as_array().map(Vec::as_slice) {
+        out.push(3);
+        out.extend((c.as_u64().context("NestedResult")? as u16).to_le_bytes());
+        out.extend((i.as_u64().context("NestedResult")? as u16).to_le_bytes());
+    } else {
+        bail!("bad argument {a}");
+    }
+    Ok(())
 }
 
 fn pure(abi: &Abi, input: &Value) -> Result<Vec<u8>> {

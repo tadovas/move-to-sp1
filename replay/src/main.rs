@@ -62,15 +62,12 @@ async fn main() -> Result<()> {
     let effects = &tx["effects"];
     let fx = &effects["effectsJson"];
     let pt = &data["kind"]["programmableTransaction"];
+    let kind = data["kind"]["kind"].as_str().unwrap_or("?");
     ensure!(
-        data["kind"]["kind"] == "PROGRAMMABLE_TRANSACTION",
-        "not a programmable transaction ({})",
-        data["kind"]["kind"]
+        kind == "PROGRAMMABLE_TRANSACTION",
+        "not supported: {kind} (a system transaction; only programmable transactions are replayed)"
     );
-    ensure!(
-        fx["status"]["success"] == true,
-        "the transaction failed on chain; replaying failures is not supported yet"
-    );
+    let chain_error = (fx["status"]["success"] != true).then(|| &fx["status"]["error"]);
     let lamport = num(&effects["lamportVersion"]).context("lamportVersion")?;
     println!(
         "tx {} (checkpoint {}, {}), sender {}",
@@ -80,65 +77,58 @@ async fn main() -> Result<()> {
         short(tx["sender"]["address"].as_str().unwrap_or("?")),
     );
 
-    // 2. packages and the image
-    let t = std::time::Instant::now();
+    // what the transaction does: its commands (Move calls name the functions to compile)
     let commands = pt["commands"].as_array().context("commands")?;
     let mut calls = vec![]; // (storage id, module, function, type args)
+    let mut kinds: BTreeMap<&str, usize> = BTreeMap::new();
+    // gas coins, real or virtual (gas reservations), are `Coin<SUI>`
+    let mut extra_types: Vec<String> = vec!["0x2::coin::Coin<0x2::sui::SUI>".into()];
     for c in commands {
-        let Some(m) = c.get("moveCall") else {
-            bail!("unsupported command {c} (only MoveCall so far)")
-        };
-        let targs: Vec<String> = m["typeArguments"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|t| t.as_str().map(String::from))
-            .collect();
-        calls.push((
-            norm(m["package"].as_str().context("package")?),
-            m["module"].as_str().context("module")?.to_string(),
-            m["function"].as_str().context("function")?.to_string(),
-            targs,
-        ));
+        let (k, body) = c
+            .as_object()
+            .and_then(|o| o.iter().next())
+            .context("bad command")?;
+        *kinds.entry(k.as_str()).or_default() += 1;
+        match k.as_str() {
+            "moveCall" => {
+                let targs: Vec<String> = body["typeArguments"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|t| t.as_str().map(String::from))
+                    .collect();
+                calls.push((
+                    norm(body["package"].as_str().context("package")?),
+                    body["module"].as_str().context("module")?.to_string(),
+                    body["function"].as_str().context("function")?.to_string(),
+                    targs,
+                ));
+            }
+            "makeMoveVector" => extra_types.extend(body["elementType"].as_str().map(String::from)),
+            "transferObjects" | "splitCoins" | "mergeCoins" => {}
+            "publish" | "upgrade" => bail!("not supported: the transaction contains a {k} command"),
+            _ => bail!("not supported: unknown command {k}"),
+        }
     }
-    let packages = Packages::fetch(&mut chain, &calls).await?;
-    let specs: Vec<String> = calls
-        .iter()
-        .map(|(pkg, module, function, targs)| {
-            let original = &packages.original_of[pkg];
-            let targs = if targs.is_empty() {
-                String::new()
-            } else {
-                format!("<{}>", targs.join(","))
-            };
-            format!("{original}::{module}::{function}{targs}")
-        })
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let compiled = move2sp1::load_bytecode(&packages.roots, &packages.deps)?;
-    let program = move2sp1::build(
-        &compiled,
-        move2sp1::Entry::Image(&specs),
-        &move2sp1::Options::default(),
-    )
-    .context("compiling the image")?;
-    let elf = program.elf;
-    std::fs::write(dir.join("image.elf"), &elf)?;
+    for i in pt["inputs"].as_array().context("inputs")? {
+        match i["kind"].as_str() {
+            Some("PURE" | "SHARED" | "IMMUTABLE_OR_OWNED") => {}
+            Some("FUNDS_WITHDRAWAL") => {
+                bail!("not supported yet: a FUNDS_WITHDRAWAL input (address-balance withdrawal)")
+            }
+            k => bail!("not supported yet: input kind {}", k.unwrap_or("?")),
+        }
+    }
     println!(
-        "image: {} function instance(s) from {} package(s) ({} modules) -> {} KiB ELF in {:.1?}",
-        specs.len(),
-        packages.roots.len() + packages.deps.len(),
-        compiled.targets.len() + compiled.deps.len(),
-        elf.len() / 1024,
-        t.elapsed()
+        "  commands: {}",
+        kinds
+            .iter()
+            .map(|(k, n)| format!("{n}× {k}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     );
-    for s in &specs {
-        println!("  {}", short_function(s));
-    }
-    let abi = movevm::Abi::from_elf(&elf)?;
 
-    // 3. input state: what the effects say was read or written, at input versions
+    // input state: what the effects say was read or written, at input versions
     let mut keys: Vec<(String, u64)> = vec![];
     let mut absent: Vec<[u8; 32]> = vec![];
     for c in fx["changedObjects"].as_array().context("changedObjects")? {
@@ -159,28 +149,83 @@ async fn main() -> Result<()> {
         }
     }
     for i in pt["inputs"].as_array().context("inputs")? {
-        match i["kind"].as_str() {
-            Some("PURE" | "SHARED") => {}
-            Some("IMMUTABLE_OR_OWNED") => keys.push((
+        if i["kind"] == "IMMUTABLE_OR_OWNED" {
+            keys.push((
                 i["objectId"].as_str().context("objectId")?.into(),
                 num(&i["version"]).context("version")?,
-            )),
-            k => bail!("unsupported input kind {k:?}"),
+            ));
         }
+    }
+    let gas_coins: Vec<&Value> = data["gasPayment"]["objects"]
+        .as_array()
+        .map(|v| v.iter().collect())
+        .unwrap_or_default();
+    for g in &gas_coins {
+        if num(&g["version"]) == Some(0) {
+            continue; // a reservation of the address balance, not an object
+        }
+        keys.push((
+            g["objectId"].as_str().context("gas objectId")?.into(),
+            num(&g["version"]).context("gas version")?,
+        ));
     }
     keys.sort();
     keys.dedup();
     let mut objects = vec![];
     for (o, (id, v)) in chain.objects(&keys).await?.into_iter().zip(&keys) {
-        objects.push(state_object(
-            &o.with_context(|| format!("{id} v{v} not found"))?,
-        )?);
+        let o = o.with_context(|| {
+            format!("not available: input object {id} v{v} is not served by the GraphQL endpoint (history not retained)")
+        })?;
+        extra_types.push(o.type_repr.clone());
+        objects.push(state_object(&o)?);
     }
     println!(
         "state: {} object(s) read or written (from effects), {} created",
         objects.len(),
         absent.len()
     );
+
+    // packages and the image
+    let t = std::time::Instant::now();
+    let packages = Packages::fetch(&mut chain, &calls, &extra_types).await?;
+    let specs: Vec<String> = calls
+        .iter()
+        .map(|(pkg, module, function, targs)| {
+            let original = &packages.original_of[pkg];
+            let targs = if targs.is_empty() {
+                String::new()
+            } else {
+                format!("<{}>", targs.join(","))
+            };
+            format!("{original}::{module}::{function}{targs}")
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let compiled = move2sp1::load_bytecode(&packages.roots, &packages.deps)?;
+    let program = move2sp1::build(
+        &compiled,
+        move2sp1::Entry::Image {
+            functions: &specs,
+            types: &extra_types,
+        },
+        &move2sp1::Options::default(),
+    )
+    .context("compiling the image")?;
+    let elf = program.elf;
+    std::fs::write(dir.join("image.elf"), &elf)?;
+    println!(
+        "image: {} function instance(s) from {} package(s) ({} modules) -> {} KiB ELF in {:.1?}",
+        specs.len(),
+        packages.roots.len() + packages.deps.len(),
+        compiled.targets.len() + compiled.deps.len(),
+        elf.len() / 1024,
+        t.elapsed()
+    );
+    for s in &specs {
+        println!("  {}", short_function(s));
+    }
+    let abi = movevm::Abi::from_elf(&elf)?;
 
     // the transaction context and the PTB
     let epoch = &effects["epoch"];
@@ -192,7 +237,7 @@ async fn main() -> Result<()> {
         "ids_created": 0,
     })
     .to_string();
-    let ptb = ptb_json(pt, &data["gasPayment"], epoch, &calls, &packages)?;
+    let ptb = ptb_json(pt, &data["gasPayment"], epoch, &fx["gasUsed"], &packages)?;
     std::fs::write(dir.join("ctx.json"), &ctx)?;
     std::fs::write(dir.join("ptb.json"), serde_json::to_string_pretty(&ptb)?)?;
 
@@ -240,20 +285,39 @@ async fn main() -> Result<()> {
     let t = std::time::Instant::now();
     let run = executor.execute(&elf, &inputs).await?;
     let elapsed = t.elapsed();
-    let output = match run.outcome {
-        Outcome::Success(o) => o,
-        Outcome::Abort { code, location } => bail!("aborted with {code} in {location}"),
-        Outcome::VmError { status, location } => bail!("VM error {status} in {location}"),
-        Outcome::Failed(e) => bail!("program exited with {e}"),
-    };
-    std::fs::write(dir.join("state_out.bin"), &output.state_out)?;
     println!(
         "executed in SP1: {} cycles ({elapsed:.2?}); input state sha256 {}",
         run.cycles,
         hex(&movevm::sha256(&state_in))
     );
+    if let Some(err) = chain_error {
+        // on chain, everything but gas was reverted: the failure itself is what to compare
+        return compare_failure(err, &run.outcome, &packages);
+    }
+    let output = match run.outcome {
+        Outcome::Success(o) => o,
+        Outcome::Abort { code, location } => {
+            bail!("DIFF: succeeded on chain, aborted with {code} in {location} in the replay")
+        }
+        Outcome::VmError { status, location } => {
+            bail!("DIFF: succeeded on chain, VM error {status} in {location} in the replay")
+        }
+        Outcome::Failed(e) => bail!("program exited with {e}"),
+    };
+    std::fs::write(dir.join("state_out.bin"), &output.state_out)?;
 
     let ok = compare(&objects, &output, effects)?;
+    let accumulator = fx["changedObjects"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["outputState"] == "OUTPUT_OBJECT_STATE_ACCUMULATOR_WRITE")
+        .count();
+    if accumulator > 0 {
+        println!(
+            "  {accumulator} address-balance write(s) (accumulators, e.g. gas paid from the balance): not modelled, not compared"
+        );
+    }
     let gas = &fx["gasUsed"];
     println!(
         "gas (from chain, not computed by the replay): computation {}, storage {}, rebate {}",
@@ -261,6 +325,45 @@ async fn main() -> Result<()> {
     );
     ensure!(ok, "replay differs from chain");
     println!("MATCH: every written object and event is byte-identical to mainnet");
+    Ok(())
+}
+
+/// A transaction that failed on chain must fail the same way: same abort code in the same
+/// module (Move aborts), or a VM error in the same module.
+fn compare_failure(err: &Value, outcome: &Outcome, packages: &Packages) -> Result<()> {
+    let kind = err["kind"].as_str().unwrap_or("?");
+    let chain_module = || -> Option<String> {
+        let l = if kind == "MOVE_ABORT" {
+            &err["abort"]["location"]
+        } else {
+            &err["location"]
+        };
+        let pkg = norm(l["package"].as_str()?);
+        let pkg = packages.original_of.get(&pkg).cloned().unwrap_or(pkg);
+        Some(format!("{pkg}::{}", l["module"].as_str()?))
+    };
+    println!(
+        "chain: failed in command {} — {}",
+        err["command"].as_str().unwrap_or("?"),
+        err["description"].as_str().unwrap_or(kind)
+    );
+    let (ok, got) = match outcome {
+        Outcome::Abort { code, location } => (
+            kind == "MOVE_ABORT"
+                && num(&err["abort"]["abortCode"]) == Some(*code)
+                && chain_module().as_deref() == Some(location),
+            format!("abort {code} in {}", short_type(location)),
+        ),
+        Outcome::VmError { status, location } => (
+            kind == "MOVE_PRIMITIVE_RUNTIME_ERROR" && chain_module().as_deref() == Some(location),
+            format!("VM error {status} in {}", short_type(location)),
+        ),
+        Outcome::Success(_) => (false, "success".into()),
+        Outcome::Failed(e) => (false, format!("exit code {e}")),
+    };
+    println!("replay: {got}");
+    ensure!(ok, "DIFF: the replay does not fail like the chain");
+    println!("MATCH: fails exactly as on mainnet (state reverted there; replay output discarded)");
     Ok(())
 }
 
@@ -422,9 +525,12 @@ struct Packages {
 }
 
 impl Packages {
+    /// The called packages and their linkage, plus the packages defining `types` (and
+    /// the type arguments of the calls).
     async fn fetch(
         chain: &mut Chain,
         calls: &[(String, String, String, Vec<String>)],
+        types: &[String],
     ) -> Result<Packages> {
         let mut original_of = BTreeMap::new();
         let mut roots = vec![];
@@ -456,6 +562,7 @@ impl Packages {
             // frameworks are upgraded in place: ask for the version
             let v = (original == upgraded).then_some(*version);
             let p = chain.package(&format!("0x{upgraded}"), v).await?;
+            original_of.insert(upgraded.clone(), original.clone());
             loaded.insert(original.clone());
             loaded.extend(p.type_origins.iter().map(|t| norm(&t.2)));
             deps.push(bytecode(&p, original)?);
@@ -467,6 +574,9 @@ impl Packages {
                 wanted.extend(type_addresses(t));
             }
         }
+        for t in types {
+            wanted.extend(type_addresses(t));
+        }
         // ... and their own dependencies (versions already loaded take precedence)
         let mut queue: Vec<String> = wanted.into_iter().collect();
         while let Some(a) = queue.pop() {
@@ -475,8 +585,13 @@ impl Packages {
             }
             let p = chain.package(&format!("0x{a}"), None).await?;
             let original = module_address(&p.modules)?;
-            queue.extend(p.linkage.iter().map(|l| norm(&l.upgraded)));
+            let have = loaded.contains(&original);
+            original_of.insert(a.clone(), original.clone());
             loaded.insert(a);
+            if have {
+                continue; // another version of a package we have
+            }
+            queue.extend(p.linkage.iter().map(|l| norm(&l.upgraded)));
             loaded.insert(original.clone());
             loaded.extend(p.type_origins.iter().map(|t| norm(&t.2)));
             deps.push(bytecode(&p, &original)?);
@@ -517,11 +632,12 @@ fn module_address(modules: &[Vec<u8>]) -> Result<String> {
 }
 
 /// The PTB in the runner's JSON format; calls go to original IDs (the image's dispatch keys).
+/// Gas coins are charged the chain's net gas cost (not computed here).
 fn ptb_json(
     pt: &Value,
     gas: &Value,
     epoch: &Value,
-    calls: &[(String, String, String, Vec<String>)],
+    gas_used: &Value,
     packages: &Packages,
 ) -> Result<Value> {
     let inputs: Vec<Value> = pt["inputs"]
@@ -535,40 +651,85 @@ fn ptb_json(
             _ => Ok(json!({ "object": i["objectId"].as_str().context("objectId")? })),
         })
         .collect::<Result<_>>()?;
+    let arg = |a: &Value| -> Result<Value> {
+        match a["kind"].as_str() {
+            Some("INPUT") => Ok(json!({ "Input": a["input"] })),
+            Some("RESULT") if a["subresult"].is_null() => Ok(json!({ "Result": a["result"] })),
+            Some("RESULT") => Ok(json!({ "NestedResult": [a["result"], a["subresult"]] })),
+            Some("GAS" | "GAS_COIN") => Ok(json!("GasCoin")),
+            k => bail!("not supported: argument kind {k:?}"),
+        }
+    };
+    let args = |list: &Value| -> Result<Vec<Value>> {
+        list.as_array().into_iter().flatten().map(arg).collect()
+    };
     let mut commands = vec![];
-    for (c, (pkg, module, function, targs)) in pt["commands"]
-        .as_array()
-        .context("commands")?
-        .iter()
-        .zip(calls)
-    {
-        let args: Vec<Value> = c["moveCall"]["arguments"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|a| match a["kind"].as_str() {
-                Some("INPUT") => Ok(json!({ "Input": a["input"] })),
-                Some("RESULT") if a["subresult"].is_null() => Ok(json!({ "Result": a["result"] })),
-                Some("RESULT") => Ok(json!({ "NestedResult": [a["result"], a["subresult"]] })),
-                Some("GAS_COIN") => Ok(json!("GasCoin")),
-                k => bail!("unsupported argument kind {k:?}"),
-            })
-            .collect::<Result<_>>()?;
-        let targs = if targs.is_empty() {
-            String::new()
-        } else {
-            format!("<{}>", targs.join(","))
-        };
-        commands.push(json!({ "MoveCall": {
-            "function": format!("0x{}::{module}::{function}{targs}", packages.original_of[pkg]),
-            "args": args,
-        }}));
+    for c in pt["commands"].as_array().context("commands")? {
+        let (k, b) = c
+            .as_object()
+            .and_then(|o| o.iter().next())
+            .context("bad command")?;
+        commands.push(match k.as_str() {
+            "moveCall" => {
+                let pkg = norm(b["package"].as_str().context("package")?);
+                let targs: Vec<&str> = b["typeArguments"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|t| t.as_str())
+                    .collect();
+                let targs = if targs.is_empty() {
+                    String::new()
+                } else {
+                    format!("<{}>", targs.join(","))
+                };
+                json!({ "MoveCall": {
+                    "function": format!("0x{}::{}::{}{targs}", packages.original_of[&pkg],
+                        b["module"].as_str().context("module")?,
+                        b["function"].as_str().context("function")?),
+                    "args": args(&b["arguments"])?,
+                }})
+            }
+            "transferObjects" => json!({ "TransferObjects": {
+                "objects": args(&b["objects"])?, "address": arg(&b["address"])?,
+            }}),
+            "splitCoins" => json!({ "SplitCoins": {
+                "coin": arg(&b["coin"])?, "amounts": args(&b["amounts"])?,
+            }}),
+            "mergeCoins" => json!({ "MergeCoins": {
+                "coin": arg(&b["coin"])?, "sources": args(&b["coinsToMerge"])?,
+            }}),
+            "makeMoveVector" => json!({ "MakeMoveVec": {
+                "type": b["elementType"], "elements": args(&b["elements"])?,
+            }}),
+            _ => bail!("not supported: command {k}"),
+        });
     }
+    // a version-0 entry reserves gas from the address balance (zero address in the PTB)
+    let coins: Vec<Value> = gas["objects"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|o| {
+            if num(&o["version"]) == Some(0) {
+                json!("0x0")
+            } else {
+                o["objectId"].clone()
+            }
+        })
+        .collect();
+    // net gas cost, as charged to the gas coin by the chain
+    let cost = |k: &str| num(&gas_used[k]).with_context(|| format!("gasUsed.{k}"));
+    let net =
+        (cost("computationCost")? + cost("storageCost")?) as i128 - cost("storageRebate")? as i128;
     Ok(json!({
         "gas": {
             "price": num(&gas["price"]).context("gas price")?,
             "rgp": num(&epoch["referenceGasPrice"]).context("reference gas price")?,
             "budget": num(&gas["budget"]).context("gas budget")?,
+            "coins": coins,
+            "charge": net.max(0) as u64,
+            "refund": (-net).max(0) as u64,
         },
         "inputs": inputs,
         "commands": commands,

@@ -97,6 +97,17 @@ pub extern "C" fn move_rt_sui_fresh_id_fast(out: &mut Address) {
     *out = fresh_id(true);
 }
 
+unsafe extern "C" {
+    /// Emitted by the compiler: 1 if the program was built with `--fast` IDs.
+    static __move_fast_ids: u8;
+}
+
+/// A fresh object ID derived as the program's own `object::new` calls do (PTB commands).
+pub(crate) fn new_id() -> Address {
+    // SAFETY: a constant emitted by the compiler.
+    fresh_id(unsafe { __move_fast_ids } != 0)
+}
+
 fn fresh_id(fast: bool) -> Address {
     TX.with(|tx| {
         let counter = tx.ids_created.to_le_bytes();

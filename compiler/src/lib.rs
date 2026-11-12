@@ -50,8 +50,13 @@ pub enum Entry<'a> {
     Publish,
     /// A program image: these functions callable through the dispatch table, each given as
     /// `address::module::function` with `<type, args>` if generic. The transaction (a PTB)
-    /// is then input data.
-    Image(&'a [String]),
+    /// is then input data. `types`: further types whose objects the transaction may handle
+    /// without passing them to these functions (e.g. coins it splits or transfers); types that
+    /// are not loaded are skipped (their objects pass through the state unchanged).
+    Image {
+        functions: &'a [String],
+        types: &'a [String],
+    },
 }
 
 /// A compiled SP1 program.
@@ -136,12 +141,16 @@ pub fn build(compiled: &Compiled, entry: Entry, options: &Options) -> Result<Pro
     let abi = match entry {
         Entry::Function(name) => translator.compile(prog.lookup_entry(name, &candidates)?)?,
         Entry::Publish => translator.compile_publish(&prog.init_functions())?,
-        Entry::Image(fns) => {
-            let insts = fns
+        Entry::Image { functions, types } => {
+            let insts = functions
                 .iter()
                 .map(|f| parse_function(&prog, f))
                 .collect::<Result<Vec<_>>>()?;
-            translator.compile_image(&insts)?
+            let types: Vec<translate::Type> = types
+                .iter()
+                .filter_map(|t| translate::Type::parse(&prog, t).ok())
+                .collect();
+            translator.compile_image(&insts, &types)?
         }
     };
     if let Some(p) = &options.emit_llvm {

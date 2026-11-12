@@ -63,6 +63,22 @@ fn registry() -> &'static [RegistryEntry] {
     }
 }
 
+/// The canonical name of a registered type (e.g. for objects moved by PTB commands).
+pub(crate) fn canonical_name(d: &TypeDesc) -> Option<&'static [u8]> {
+    registry()
+        .iter()
+        .find(|e| core::ptr::eq(e.desc(), d))
+        .map(|e| e.name())
+}
+
+/// The descriptor of a registered type, by canonical name.
+pub(crate) fn desc_by_name(name: &[u8]) -> Option<&'static TypeDesc> {
+    registry()
+        .iter()
+        .find(|e| e.name() == name)
+        .map(|e| e.desc())
+}
+
 impl RegistryEntry {
     fn name(&self) -> &'static [u8] {
         // SAFETY: registry names are constants of `name_len` bytes.

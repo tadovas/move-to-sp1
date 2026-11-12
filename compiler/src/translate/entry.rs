@@ -245,6 +245,17 @@ impl<'ctx> Translator<'ctx, '_> {
             .add_global(i64t, None, "__move_type_registry_len");
         len.set_initializer(&i64t.const_int(entries.len() as u64, false));
         len.set_constant(true);
+        // IDs the runtime derives itself (PTB `SplitCoins`) follow the build's `ids` mode
+        let fast = self
+            .module
+            .add_global(self.ctx.i8_type(), None, "__move_fast_ids");
+        fast.set_initializer(
+            &self
+                .ctx
+                .i8_type()
+                .const_int(self.options.fast as u64, false),
+        );
+        fast.set_constant(true);
         Ok(())
     }
 
