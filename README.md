@@ -1,5 +1,9 @@
 # move2sp1 — Sui transactions, proven
 
+**[▶ Demo video (15 min)](https://www.loom.com/share/a1a40a651a6744dcbd039f6e193d818c)** — the
+walkthrough in `scripts/demo.sh`: compile Move, run DeepBook's tests in the zkVM, replay and
+prove mainnet transactions, replay whole checkpoints.
+
 **move2sp1** compiles Move — from source, or straight from the bytecode of packages deployed on
 Sui — ahead of time to RISC-V and runs it in [SP1](https://github.com/succinctlabs/sp1),
 Succinct's zero-knowledge virtual machine. On top of it, **sui-replay** takes any Sui mainnet
