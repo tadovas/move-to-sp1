@@ -69,22 +69,38 @@ impl Chain {
                     lamportVersion timestamp status effectsJson
                     checkpoint {{ sequenceNumber }}
                     epoch {{ epochId referenceGasPrice startTimestamp }}
-                    events(first: 50) {{ pageInfo {{ hasNextPage }} nodes {{ contents {{ type {{ repr }} bcs }} }} }}
-                    objectChanges(first: 50) {{ pageInfo {{ hasNextPage }} nodes {{
-                        address idCreated idDeleted
-                        outputState {{ {OBJECT} }}
-                    }} }}
+                    {EVENTS}
+                    {CHANGES}
                 }}
             }} }}"#
         );
         let d = self.query(&q, json!({ "d": digest })).await?;
-        let tx = d["transaction"].clone();
+        let mut tx = d["transaction"].clone();
         ensure!(!tx.is_null(), "transaction {digest} not found");
-        for c in ["events", "objectChanges"] {
-            ensure!(
-                tx["effects"][c]["pageInfo"]["hasNextPage"] != true,
-                "transaction has more than 50 {c} (pagination not implemented)"
-            );
+        // further pages of events and object changes
+        for (field, selection) in [("events", EVENTS), ("objectChanges", CHANGES)] {
+            loop {
+                let page = &tx["effects"][field]["pageInfo"];
+                if page["hasNextPage"] != true {
+                    break;
+                }
+                let after = page["endCursor"].clone();
+                let q = format!(
+                    r#"query($d: String!, $after: String) {{ transaction(digest: $d) {{ effects {{
+                        {} }} }} }}"#,
+                    selection.replace("(first: 50)", "(first: 50, after: $after)")
+                );
+                let d = self
+                    .query(&q, json!({ "d": digest, "after": after }))
+                    .await?;
+                let next = &d["transaction"]["effects"][field];
+                let nodes = next["nodes"].as_array().context("page nodes")?.clone();
+                let all = tx["effects"][field]["nodes"]
+                    .as_array_mut()
+                    .context("nodes")?;
+                all.extend(nodes);
+                tx["effects"][field]["pageInfo"] = next["pageInfo"].clone();
+            }
         }
         Ok(tx)
     }
@@ -120,6 +136,20 @@ impl Chain {
 
     /// A package (a given version if `version` is set): its modules, linkage and type origins.
     pub async fn package(&mut self, address: &str, version: Option<u64>) -> Result<Package> {
+        // `package(address)` alone resolves to the *latest* version of the package's family;
+        // a storage ID names one exact version, which `object(address)` gives
+        let version = match version {
+            Some(v) => Some(v),
+            None => {
+                let q = "query($a: SuiAddress!) { object(address: $a) { version } }";
+                let d = self.query(q, json!({ "a": address })).await?;
+                Some(
+                    d["object"]["version"]
+                        .as_u64()
+                        .with_context(|| format!("package {address} not found"))?,
+                )
+            }
+        };
         let q = r#"query($a: SuiAddress!, $v: UInt53) { package(address: $a, version: $v) {
             linkage { originalId upgradedId version }
             typeOrigins { module struct definingId }
@@ -179,6 +209,13 @@ impl Chain {
         })
     }
 }
+
+const EVENTS: &str = "events(first: 50) { pageInfo { hasNextPage endCursor } nodes { contents { type { repr } bcs } } }";
+const CHANGES: &str = concat!(
+    "objectChanges(first: 50) { pageInfo { hasNextPage endCursor } nodes { address idCreated idDeleted outputState { ",
+    "address version owner { __typename ... on AddressOwner { address { address } } ... on ObjectOwner { address { address } } ... on ConsensusAddressOwner { address { address } } } asMoveObject { contents { type { repr } bcs } }",
+    " } } }"
+);
 
 /// Object fields selected everywhere.
 const OBJECT: &str = r#"address version

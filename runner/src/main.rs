@@ -38,6 +38,22 @@ enum Cmd {
         #[arg(long)]
         ptb: Option<PathBuf>,
     },
+    /// Prove a run on the local CPU prover and verify the proof; print the timings.
+    Prove {
+        elf: PathBuf,
+        /// As for `run`.
+        args: Vec<String>,
+        #[arg(long)]
+        state_in: Option<PathBuf>,
+        #[arg(long)]
+        ptb: Option<PathBuf>,
+        /// A compressed (constant-size) proof instead of a core proof.
+        #[arg(long)]
+        compressed: bool,
+        /// Write the proof here.
+        #[arg(long)]
+        save: Option<PathBuf>,
+    },
     /// Print the program's entry signature.
     Info { elf: PathBuf },
     /// Run the unit tests compiled by `move2sp1 test` (a directory with `tests.json`).
@@ -68,6 +84,40 @@ async fn main() -> Result<()> {
             ptb,
         } => run(elf, args, compact, state_in, state_out, ptb).await?,
         Cmd::Test { dir } => test(dir).await?,
+        Cmd::Prove {
+            elf,
+            args,
+            state_in,
+            ptb,
+            compressed,
+            save,
+        } => {
+            let bytes =
+                std::fs::read(&elf).with_context(|| format!("reading {}", elf.display()))?;
+            let abi = Abi::from_elf(&bytes)?;
+            let inputs = inputs(&abi, &args, state_in.as_ref(), ptb.as_ref())?;
+            let cycles = Executor::new().await.execute(&bytes, &inputs).await?.cycles;
+            println!(
+                "proving {} ({cycles} cycles, {} proof) ...",
+                elf.display(),
+                if compressed { "compressed" } else { "core" }
+            );
+            let r = movevm::prove(&bytes, &inputs, compressed, save.as_deref()).await?;
+            println!("verifying key: {}", r.vkey);
+            println!(
+                "setup {:.2?}, prove {:.2?} ({:.0} kHz), verify {:.2?}; proof {} KiB",
+                r.setup,
+                r.prove,
+                cycles as f64 / r.prove.as_secs_f64() / 1e3,
+                r.verify,
+                r.proof_bytes / 1024
+            );
+            println!(
+                "public values: {} bytes (sha256 {})",
+                r.public_values.len(),
+                short_hex(&sha256(&r.public_values))
+            );
+        }
     }
     Ok(())
 }
@@ -82,23 +132,8 @@ async fn run(
 ) -> Result<()> {
     let bytes = std::fs::read(&elf).with_context(|| format!("reading {}", elf.display()))?;
     let abi = Abi::from_elf(&bytes)?;
-    let state = match &state_in {
-        Some(p) => std::fs::read(p).with_context(|| format!("reading {}", p.display()))?,
-        None => vec![],
-    };
-    let in_hash = sha256(&state);
-    let inputs = match &ptb {
-        Some(p) => {
-            let ptb: Value = serde_json::from_slice(
-                &std::fs::read(p).with_context(|| format!("reading {}", p.display()))?,
-            )?;
-            let [ctx] = args.as_slice() else {
-                bail!("with --ptb, the only argument is the transaction context")
-            };
-            Inputs::for_image(&abi, state, ctx, &ptb)?
-        }
-        None => Inputs::from_json(&abi, state, &args)?,
-    };
+    let inputs = inputs(&abi, &args, state_in.as_ref(), ptb.as_ref())?;
+    let in_hash = sha256(&inputs.state);
 
     let executor = Executor::new().await;
     let t = std::time::Instant::now();
@@ -174,6 +209,32 @@ async fn run(
         println!("  projected with --fast: ~{projected} cycles (estimate, not measured)");
     }
     Ok(())
+}
+
+/// A run's inputs: the state snapshot and the arguments (or, for an image, the transaction
+/// context and the PTB).
+fn inputs(
+    abi: &Abi,
+    args: &[String],
+    state_in: Option<&PathBuf>,
+    ptb: Option<&PathBuf>,
+) -> Result<Inputs> {
+    let state = match state_in {
+        Some(p) => std::fs::read(p).with_context(|| format!("reading {}", p.display()))?,
+        None => vec![],
+    };
+    match ptb {
+        Some(p) => {
+            let ptb: Value = serde_json::from_slice(
+                &std::fs::read(p).with_context(|| format!("reading {}", p.display()))?,
+            )?;
+            let [ctx] = args else {
+                bail!("with --ptb, the only argument is the transaction context")
+            };
+            Inputs::for_image(abi, state, ctx, &ptb)
+        }
+        None => Inputs::from_json(abi, state, args),
+    }
 }
 
 /// `movevm test <dir>`: run the unit tests compiled by `move2sp1 test` and compare each

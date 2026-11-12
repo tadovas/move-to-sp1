@@ -208,6 +208,71 @@ impl Executor {
     }
 }
 
+/// What proving a run took.
+pub struct ProofReport {
+    /// Proving-key setup (once per program).
+    pub setup: std::time::Duration,
+    pub prove: std::time::Duration,
+    pub verify: std::time::Duration,
+    /// Serialized proof (with public values), in bytes.
+    pub proof_bytes: usize,
+    /// The program's verifying key (hash).
+    pub vkey: String,
+    pub public_values: Vec<u8>,
+}
+
+/// Prove a run on the local CPU prover (core proof, or compressed: constant size), then
+/// verify the proof.
+pub async fn prove(
+    elf: &[u8],
+    inputs: &Inputs,
+    compressed: bool,
+    save: Option<&std::path::Path>,
+) -> Result<ProofReport> {
+    use std::time::Instant;
+    let client = ProverClient::builder().cpu().build().await;
+    let t = Instant::now();
+    let pk = client
+        .setup(Elf::Dynamic(Arc::from(elf)))
+        .await
+        .map_err(|e| anyhow!("setup failed: {e}"))?;
+    let setup = t.elapsed();
+    let mut stdin = SP1Stdin::new();
+    stdin.write_vec(inputs.state.clone());
+    for a in &inputs.args {
+        stdin.write_vec(a.clone());
+    }
+    let t = Instant::now();
+    let request = client.prove(&pk, stdin);
+    let proof = if compressed {
+        request.compressed().await
+    } else {
+        request.await
+    }
+    .map_err(|e| anyhow!("proving failed: {e}"))?;
+    let prove = t.elapsed();
+    let t = Instant::now();
+    client
+        .verify(&proof, pk.verifying_key(), None)
+        .map_err(|e| anyhow!("verification failed: {e}"))?;
+    let verify = t.elapsed();
+    let path = save
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::env::temp_dir().join("movevm-proof.bin"));
+    proof
+        .save(&path)
+        .map_err(|e| anyhow!("saving the proof: {e}"))?;
+    let proof_bytes = std::fs::metadata(&path)?.len() as usize;
+    Ok(ProofReport {
+        setup,
+        prove,
+        verify,
+        proof_bytes,
+        vkey: pk.verifying_key().bytes32(),
+        public_values: proof.public_values.to_vec(),
+    })
+}
+
 /// `kind (u8) || code (u64 LE) || len (u64 LE) || location`
 fn failure_record(r: &[u8]) -> Option<(u8, u64, String)> {
     let (&kind, r) = r.split_first()?;

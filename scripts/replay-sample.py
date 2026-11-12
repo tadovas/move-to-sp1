@@ -51,8 +51,9 @@ def recent_digests(n):
 
 def classify(output, code):
     last = output.strip().splitlines()[-1] if output.strip() else ""
-    if code == 0 and "MATCH" in last:
-        return "MATCH", last
+    verdict = next((l for l in output.splitlines() if l.startswith("MATCH:")), None)
+    if code == 0 and verdict:
+        return "MATCH", verdict
     reason = next(
         (l for l in output.splitlines() if l.startswith("Error:")), last
     ).removeprefix("Error: ")
