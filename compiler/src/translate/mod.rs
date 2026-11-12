@@ -25,11 +25,13 @@
 //! * `sui`      — Sui framework (0x2) natives: objects, transfers, events, dynamic fields
 //! * `runtime`  — the `move_rt_*` runtime interface
 //! * `entry`    — `__move_entry` glue and the program ABI
+//! * `image`    — program images: dispatch table for PTBs (transactions as data)
 
 mod descriptor;
 mod entry;
 mod enums;
 mod function;
+mod image;
 mod natives;
 mod ops;
 mod program;
@@ -55,7 +57,7 @@ use inkwell::{
 
 pub use entry::EntryAbi;
 pub use program::{FnId, Program};
-pub use types::Type;
+pub use types::{Type, split_type_args};
 
 /// Translation options. Defaults are faithful to Sui; optimisations are opt-in.
 #[derive(Clone, Copy, Debug, Default)]
@@ -157,7 +159,13 @@ impl<'ctx, 'p> Translator<'ctx, 'p> {
             ));
         }
         self.drain()?;
-        let tx_context = self
+        let tx_context = self.tx_context_type()?;
+        self.publish_glue(&fns, &tx_context)
+    }
+
+    /// `sui::tx_context::TxContext`.
+    fn tx_context_type(&self) -> Result<Type> {
+        let id = self
             .prog
             .struct_by_name(
                 &move_core_types::account_address::AccountAddress::TWO,
@@ -165,7 +173,7 @@ impl<'ctx, 'p> Translator<'ctx, 'p> {
                 "TxContext",
             )
             .ok_or_else(|| anyhow!("sui::tx_context not loaded"))?;
-        self.publish_glue(&fns, &Type::Struct(tx_context, vec![]))
+        Ok(Type::Struct(id, vec![]))
     }
 
     /// Translate every queued function; report unsupported natives all at once.

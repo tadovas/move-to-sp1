@@ -8,6 +8,7 @@
 //!               shared objects (taken and returned with `sui::test_scenario`)
 //! * `clock`   — the `Clock` singleton
 //! * `hash`    — Sui's hashing (Blake2b-256 IDs) and `sui::hash` natives
+//! * `ptb`     — the PTB interpreter: transactions as data, run against a program image
 //! * `state`   — state snapshots: persistent objects in from / out to other runs
 //! * `effects` — events, transfers, shares and freezes, committed after the results
 #![no_std]
@@ -21,6 +22,7 @@ pub use move_rt_core;
 mod clock;
 mod effects;
 mod hash;
+mod ptb;
 mod state;
 mod store;
 mod tx;

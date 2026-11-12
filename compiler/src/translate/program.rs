@@ -120,6 +120,42 @@ impl<'a> Program<'a> {
         bail!("datatype {mname}::{name} not found")
     }
 
+    /// A struct or enum by address, module and name, if loaded.
+    pub fn datatype_by_name(
+        &self,
+        addr: &AccountAddress,
+        module: &str,
+        name: &str,
+    ) -> Option<Datatype> {
+        let m = self.find_module(addr, IdentStr::new(module).ok()?)?;
+        let cm = self.modules[m];
+        let named = |h: DatatypeHandleIndex| {
+            cm.identifier_at(cm.datatype_handle_at(h).name).as_str() == name
+        };
+        if let Some(i) = cm.struct_defs().iter().position(|d| named(d.struct_handle)) {
+            return Some(Datatype::Struct(StructId {
+                module: m,
+                def: StructDefinitionIndex(i as u16),
+            }));
+        }
+        let i = cm.enum_defs().iter().position(|d| named(d.enum_handle))?;
+        Some(Datatype::Enum(EnumId {
+            module: m,
+            def: EnumDefinitionIndex(i as u16),
+        }))
+    }
+
+    /// A function by address, module and name, if loaded.
+    pub fn function_by_name(
+        &self,
+        addr: &AccountAddress,
+        module: &str,
+        name: &str,
+    ) -> Option<FnId> {
+        let m = self.find_module(addr, IdentStr::new(module).ok()?)?;
+        self.find_function(m, IdentStr::new(name).ok()?)
+    }
+
     /// A struct by address, module and name (e.g. `0x2::clock::Clock`), if loaded.
     pub fn struct_by_name(
         &self,

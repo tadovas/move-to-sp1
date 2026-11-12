@@ -6,7 +6,8 @@
 //! `sha256(input snapshot) || len (ULEB128) || output snapshot`.
 //! So a verifier can chain proofs: run N+1's input hash equals the hash of run N's output.
 //!
-//! Snapshot encoding: ULEB128 count, then per object:
+//! Snapshot encoding (canonical: entries sorted by object ID, so the hash of a state does not
+//! depend on which program wrote it): ULEB128 count, then per object:
 //! `kind (u8: 0 owned, 1 shared, 2 dynamic-field child) || id (32) || owner or parent (32;
 //! zero for shared) || canonical type name (ULEB128 len + bytes) || BCS value (ULEB128 len + bytes)`.
 //!
@@ -69,8 +70,9 @@ impl RegistryEntry {
     }
 }
 
-/// (hash of the input snapshot, input entries of types this program does not know)
-static SNAPSHOT: Global<([u8; 32], u64, Vec<u8>)> = Global::new(([0; 32], 0, Vec::new()));
+/// (hash of the input snapshot, input entries of types this program does not know: ID and
+/// encoded entry)
+static SNAPSHOT: Global<([u8; 32], Vec<(Address, Vec<u8>)>)> = Global::new(([0; 32], Vec::new()));
 
 /// Platform hook called by the entry glue before reading arguments: load the input state.
 #[unsafe(no_mangle)]
@@ -78,7 +80,7 @@ pub extern "C" fn move_rt_start() {
     let snapshot: Vec<u8> = sp1_zkvm::io::read_vec();
     let hash: [u8; 32] = Sha256::digest(&snapshot).into();
     let mut input = snapshot.as_slice();
-    let (mut opaque_count, mut opaque) = (0, Vec::new());
+    let mut opaque = Vec::new();
     let n = if input.is_empty() {
         0
     } else {
@@ -113,18 +115,16 @@ pub extern "C" fn move_rt_start() {
             None => {
                 // unknown to this program: pass through unchanged
                 let consumed = entry_start.len() - input.len();
-                opaque.extend_from_slice(&entry_start[..consumed]);
-                opaque_count += 1;
+                opaque.push((id, entry_start[..consumed].to_vec()));
             }
         }
     }
-    SNAPSHOT.with(|s| *s = (hash, opaque_count, opaque));
+    SNAPSHOT.with(|s| *s = (hash, opaque));
 }
 
 /// Commit `sha256(input snapshot) || len || output snapshot` (called by `move_rt_finish`).
 pub(crate) fn commit() {
-    let (in_hash, opaque_count, opaque) = SNAPSHOT.with(|s| (s.0, s.1, core::mem::take(&mut s.2)));
-    let (mut count, mut entries) = (opaque_count, opaque);
+    let (in_hash, mut entries) = SNAPSHOT.with(|s| (s.0, core::mem::take(&mut s.1)));
     store::for_each_stored(|placement, id, d, data| {
         let (kind, other) = match placement {
             Placement::Owned(a) => (0u8, a),
@@ -139,18 +139,22 @@ pub(crate) fn commit() {
         let mut value = Vec::new();
         // SAFETY: stored objects are initialized values of their descriptor's type.
         bcs::encode(unsafe { Value::new(d, data) }, &mut value);
-        entries.push(kind);
-        entries.extend_from_slice(id);
-        entries.extend_from_slice(&other);
-        bcs::uleb128(name.len() as u64, &mut entries);
-        entries.extend_from_slice(name);
-        bcs::uleb128(value.len() as u64, &mut entries);
-        entries.extend_from_slice(&value);
-        count += 1;
+        let mut entry = Vec::new();
+        entry.push(kind);
+        entry.extend_from_slice(id);
+        entry.extend_from_slice(&other);
+        bcs::uleb128(name.len() as u64, &mut entry);
+        entry.extend_from_slice(name);
+        bcs::uleb128(value.len() as u64, &mut entry);
+        entry.extend_from_slice(&value);
+        entries.push((*id, entry));
     });
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
     let mut snapshot = Vec::new();
-    bcs::uleb128(count, &mut snapshot);
-    snapshot.extend_from_slice(&entries);
+    bcs::uleb128(entries.len() as u64, &mut snapshot);
+    for (_, entry) in &entries {
+        snapshot.extend_from_slice(entry);
+    }
 
     let mut out = in_hash.to_vec();
     bcs::uleb128(snapshot.len() as u64, &mut out);

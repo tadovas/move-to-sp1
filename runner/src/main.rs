@@ -33,6 +33,10 @@ enum Cmd {
         /// Write the output state snapshot here (input for the next run).
         #[arg(long)]
         state_out: Option<PathBuf>,
+        /// For a program image: the transaction (PTB JSON file); the only argument is then
+        /// the transaction context.
+        #[arg(long)]
+        ptb: Option<PathBuf>,
     },
     /// Print the program's entry signature.
     Info { elf: PathBuf },
@@ -61,7 +65,8 @@ async fn main() -> Result<()> {
             compact,
             state_in,
             state_out,
-        } => run(elf, args, compact, state_in, state_out).await?,
+            ptb,
+        } => run(elf, args, compact, state_in, state_out, ptb).await?,
         Cmd::Test { dir } => test(dir).await?,
     }
     Ok(())
@@ -73,6 +78,7 @@ async fn run(
     compact: bool,
     state_in: Option<PathBuf>,
     state_out: Option<PathBuf>,
+    ptb: Option<PathBuf>,
 ) -> Result<()> {
     let bytes = std::fs::read(&elf).with_context(|| format!("reading {}", elf.display()))?;
     let abi = Abi::from_elf(&bytes)?;
@@ -81,7 +87,18 @@ async fn run(
         None => vec![],
     };
     let in_hash = sha256(&state);
-    let inputs = Inputs::from_json(&abi, state, &args)?;
+    let inputs = match &ptb {
+        Some(p) => {
+            let ptb: Value = serde_json::from_slice(
+                &std::fs::read(p).with_context(|| format!("reading {}", p.display()))?,
+            )?;
+            let [ctx] = args.as_slice() else {
+                bail!("with --ptb, the only argument is the transaction context")
+            };
+            Inputs::for_image(&abi, state, ctx, &ptb)?
+        }
+        None => Inputs::from_json(&abi, state, &args)?,
+    };
 
     let executor = Executor::new().await;
     let t = std::time::Instant::now();

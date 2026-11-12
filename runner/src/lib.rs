@@ -7,6 +7,7 @@
 
 pub mod abi;
 pub mod out;
+pub mod ptb;
 
 use std::sync::Arc;
 
@@ -77,6 +78,13 @@ impl Inputs {
             state,
             args: encoded,
         })
+    }
+
+    /// For a program image: the transaction context (JSON) and the PTB (JSON, see `ptb`).
+    pub fn for_image(abi: &Abi, state: Vec<u8>, tx_context: &str, ptb: &Value) -> Result<Inputs> {
+        let mut inputs = Inputs::from_json(abi, state, &[tx_context.to_string()])?;
+        inputs.args.push(ptb::encode(abi, ptb)?);
+        Ok(inputs)
     }
 }
 

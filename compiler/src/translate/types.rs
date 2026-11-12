@@ -10,6 +10,7 @@ use anyhow::{Result, anyhow, bail};
 use move_binary_format::file_format::SignatureToken;
 
 use move_core_types::{
+    account_address::AccountAddress,
     identifier::Identifier,
     language_storage::{StructTag, TypeTag},
 };
@@ -169,6 +170,53 @@ impl Type {
         }
     }
 
+    /// Parse a type in Move/Sui syntax: `u64`, `vector<u8>`, `0x2::coin::Coin<0x…::usdc::USDC>`
+    /// (addresses with or without `0x`, short or 64 hex digits).
+    pub fn parse(prog: &Program, s: &str) -> Result<Type> {
+        let s = s.trim();
+        let (head, args) = match s.find('<') {
+            Some(i) => {
+                let inner = s[i + 1..]
+                    .strip_suffix('>')
+                    .ok_or_else(|| anyhow!("bad type {s}"))?;
+                (
+                    &s[..i],
+                    split_type_args(inner)
+                        .iter()
+                        .map(|a| Self::parse(prog, a))
+                        .collect::<Result<Vec<_>>>()?,
+                )
+            }
+            None => (s, vec![]),
+        };
+        Ok(match (head, args.as_slice()) {
+            ("bool", []) => Type::Bool,
+            ("u8", []) => Type::U8,
+            ("u16", []) => Type::U16,
+            ("u32", []) => Type::U32,
+            ("u64", []) => Type::U64,
+            ("u128", []) => Type::U128,
+            ("u256", []) => Type::U256,
+            ("address", []) => Type::Address,
+            ("vector", [e]) => Type::Vector(Box::new(e.clone())),
+            _ => {
+                let parts: Vec<&str> = head.split("::").collect();
+                let [addr, module, name] = parts.as_slice() else {
+                    bail!("bad type {s}")
+                };
+                let addr = AccountAddress::from_hex_literal(&format!(
+                    "0x{}",
+                    addr.trim_start_matches("0x")
+                ))
+                .map_err(|e| anyhow!("bad address in {s}: {e}"))?;
+                let d = prog
+                    .datatype_by_name(&addr, module, name)
+                    .ok_or_else(|| anyhow!("type {s} not loaded"))?;
+                Self::datatype(d, args)
+            }
+        })
+    }
+
     /// The Move `TypeTag` of this type (as used by Sui to derive dynamic field IDs).
     pub fn type_tag(&self, prog: &Program) -> Result<TypeTag> {
         let datatype = |m: ModuleIdx, name: String, args: &[Type]| -> Result<TypeTag> {
@@ -207,6 +255,24 @@ impl Type {
             _ => None,
         }
     }
+}
+
+/// Split `A, B<C, D>, E` at top-level commas.
+pub fn split_type_args(s: &str) -> Vec<&str> {
+    let (mut depth, mut start, mut out) = (0, 0, vec![]);
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&s[start..]);
+    out
 }
 
 /// `<T1, T2>` (nothing for an empty list).

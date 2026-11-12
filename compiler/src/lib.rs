@@ -48,6 +48,10 @@ pub enum Entry<'a> {
     Function(&'a str),
     /// Every module's `init` (package publish).
     Publish,
+    /// A program image: these functions callable through the dispatch table, each given as
+    /// `address::module::function` with `<type, args>` if generic. The transaction (a PTB)
+    /// is then input data.
+    Image(&'a [String]),
 }
 
 /// A compiled SP1 program.
@@ -97,6 +101,13 @@ pub fn build(compiled: &Compiled, entry: Entry, options: &Options) -> Result<Pro
     let abi = match entry {
         Entry::Function(name) => translator.compile(prog.lookup_entry(name, &candidates)?)?,
         Entry::Publish => translator.compile_publish(&prog.init_functions())?,
+        Entry::Image(fns) => {
+            let insts = fns
+                .iter()
+                .map(|f| parse_function(&prog, f))
+                .collect::<Result<Vec<_>>>()?;
+            translator.compile_image(&insts)?
+        }
     };
     if let Some(p) = &options.emit_llvm {
         target::prepare(translator.module(), &tm);
@@ -128,6 +139,41 @@ pub fn build(compiled: &Compiled, entry: Entry, options: &Options) -> Result<Pro
         elf: link::link(&objects, &notes, "_start")?,
         abi,
     })
+}
+
+/// `address::module::function<T1, T2>` -> a function instance of the loaded program.
+fn parse_function(prog: &translate::Program, spec: &str) -> Result<translate::FnInst> {
+    use anyhow::Context as _;
+    let (path, args) = match spec.find('<') {
+        Some(i) => (&spec[..i], Some(&spec[i..])),
+        None => (spec, None),
+    };
+    let parts: Vec<&str> = path.split("::").collect();
+    let [addr, module, function] = parts.as_slice() else {
+        bail!("expected address::module::function, got {spec}")
+    };
+    let addr = move_core_types::account_address::AccountAddress::from_hex_literal(&format!(
+        "0x{}",
+        addr.trim_start_matches("0x")
+    ))
+    .with_context(|| format!("bad address in {spec}"))?;
+    let id = prog
+        .function_by_name(&addr, module, function)
+        .with_context(|| format!("function {spec} not loaded"))?;
+    let type_args = match args {
+        Some(a) => {
+            let inner = a
+                .strip_prefix('<')
+                .and_then(|a| a.strip_suffix('>'))
+                .with_context(|| format!("bad type arguments in {spec}"))?;
+            translate::split_type_args(inner)
+                .iter()
+                .map(|t| translate::Type::parse(prog, t))
+                .collect::<Result<_>>()?
+        }
+        None => vec![],
+    };
+    Ok(translate::FnInst { id, type_args })
 }
 
 /// Build every unit test of the root package (loaded in test mode) whose name contains

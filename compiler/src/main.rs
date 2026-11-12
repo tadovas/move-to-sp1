@@ -54,6 +54,10 @@ enum Cmd {
         /// `init` (dependencies first) and outputs the created objects as state.
         #[arg(long, conflicts_with = "entry")]
         publish: bool,
+        /// Build a program *image* instead: these functions (repeatable; `address::module::
+        /// function<type args>`) callable by a PTB given at run time.
+        #[arg(long = "image", conflicts_with_all = ["entry", "publish"])]
+        image: Vec<String>,
         /// Also write the generated LLVM IR (before optimization) to this path.
         #[arg(long)]
         emit_llvm: Option<PathBuf>,
@@ -96,11 +100,14 @@ fn main() -> Result<()> {
             output,
             test_mode,
             publish,
+            image,
             emit_llvm,
         } => {
             let compiled = move2sp1::load(&input.sources(), test_mode)?;
             let entry = if publish {
                 Entry::Publish
+            } else if !image.is_empty() {
+                Entry::Image(&image)
             } else {
                 Entry::Function(&entry)
             };

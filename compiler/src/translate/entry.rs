@@ -48,6 +48,11 @@ impl EntryAbi {
     pub fn to_json(&self) -> String {
         self.json.to_string()
     }
+
+    /// Add a field to the ABI JSON.
+    pub(super) fn set(&mut self, key: &str, value: Vec<Value>) {
+        self.json[key] = Value::Array(value);
+    }
 }
 
 impl<'ctx> Translator<'ctx, '_> {
@@ -121,7 +126,7 @@ impl<'ctx> Translator<'ctx, '_> {
         self.abi("publish".into(), std::slice::from_ref(tx_context), &[])
     }
 
-    fn begin_glue(&mut self) -> Result<()> {
+    pub(super) fn begin_glue(&mut self) -> Result<()> {
         let glue = self.module.add_function(
             "__move_entry",
             self.ctx.void_type().fn_type(&[], false),
@@ -134,15 +139,18 @@ impl<'ctx> Translator<'ctx, '_> {
         Ok(())
     }
 
-    fn finish_glue(&mut self) -> Result<()> {
+    pub(super) fn finish_glue(&mut self) -> Result<()> {
         // platform hook (Sui: commit the effects and the output state)
         self.call_runtime("move_rt_finish", None, &[])?;
         self.builder.build_return(None)?;
+        if self.module.get_global("__move_dispatch").is_none() {
+            self.emit_empty_dispatch_table();
+        }
         self.emit_type_registry()
     }
 
     /// One entry argument (see the module docs).
-    fn read_param(&mut self, ty: &Type) -> Result<BasicMetadataValueEnum<'ctx>> {
+    pub(super) fn read_param(&mut self, ty: &Type) -> Result<BasicMetadataValueEnum<'ctx>> {
         let read = |t: &mut Self, ty: &Type| -> Result<_> {
             let slot = t.builder.build_alloca(t.llvm_type(ty)?, "arg")?;
             t.call_runtime(
@@ -194,6 +202,20 @@ impl<'ctx> Translator<'ctx, '_> {
         })
     }
 
+    /// An empty `__move_dispatch` (non-image programs; the runtime always links the PTB
+    /// interpreter that reads it).
+    fn emit_empty_dispatch_table(&self) {
+        let i64t = self.ctx.i64_type();
+        let g = self
+            .module
+            .add_global(i64t.array_type(0), None, "__move_dispatch");
+        g.set_initializer(&i64t.const_array(&[]));
+        g.set_constant(true);
+        let len = self.module.add_global(i64t, None, "__move_dispatch_len");
+        len.set_initializer(&i64t.const_zero());
+        len.set_constant(true);
+    }
+
     /// `__move_type_registry`: canonical name -> descriptor for every type that can be stored
     /// in the state, so the runtime can rebuild objects from a snapshot.
     fn emit_type_registry(&mut self) -> Result<()> {
@@ -226,7 +248,7 @@ impl<'ctx> Translator<'ctx, '_> {
         Ok(())
     }
 
-    fn abi(&self, name: String, params: &[Type], returns: &[Type]) -> Result<EntryAbi> {
+    pub(super) fn abi(&self, name: String, params: &[Type], returns: &[Type]) -> Result<EntryAbi> {
         let mut types = BTreeMap::new();
         for ty in params
             .iter()

@@ -423,3 +423,24 @@ pub extern "C" fn move_rt_sui_check_inputs() {
         abort_in(crate::location::STATE, crate::state::E_NOT_OWNER);
     }
 }
+
+/// Whether object `id` is in the state.
+pub(crate) fn has_object(id: &Address) -> bool {
+    INVENTORY.with(|inv| inv.objects.contains_key(id))
+}
+
+/// Move object `id` (of type `d`) out of the state, for a by-value PTB argument. Owned
+/// objects must belong to the sender (checked with the other inputs).
+pub(crate) fn take_object(id: &Address, d: &TypeDesc) -> *mut u8 {
+    let found = INVENTORY.with(|inv| {
+        let ok = inv.objects.get(id).is_some_and(|o| ptr::eq(o.desc, d));
+        if ok { inv.objects.remove(id) } else { None }
+    });
+    let Some(obj) = found else {
+        abort_in(crate::location::STATE, crate::state::E_OBJECT_NOT_IN_STATE)
+    };
+    if let Some(owner) = obj.owner {
+        LENT_OWNED.with(|l| l.push(owner));
+    }
+    obj.data
+}
