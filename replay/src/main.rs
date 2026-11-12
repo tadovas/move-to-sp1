@@ -377,6 +377,17 @@ fn compare_failure(err: &Value, outcome: &Outcome, packages: &Packages) -> Resul
         err["description"].as_str().unwrap_or(kind)
     );
     let (ok, got) = match outcome {
+        // failures of the PTB interpreter itself (runtime/sui/src/ptb.rs error codes)
+        Outcome::Abort { code, location } if location == "move2sp1::ptb" => {
+            let ours = match code {
+                6 => "INSUFFICIENT_COIN_BALANCE",
+                7 => "COIN_BALANCE_OVERFLOW",
+                3 | 4 => "COMMAND_ARGUMENT_ERROR",
+                10 => "INSUFFICIENT_GAS",
+                _ => "?",
+            };
+            (kind == ours, format!("PTB error {ours} (code {code})"))
+        }
         Outcome::Abort { code, location } => (
             kind == "MOVE_ABORT"
                 && num(&err["abort"]["abortCode"]) == Some(*code)

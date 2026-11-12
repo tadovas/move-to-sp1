@@ -12,7 +12,7 @@ $ sui-replay AjzaKVKPjr49AZk68PpKJzo3D7spa753oMgnrA8DPGdq      # a DeepBook v3 m
 image: 2 function instance(s) from 8 package(s) (122 modules) -> 461 KiB ELF in 0.8s
   0x2c8d::balance_manager::generate_proof_as_owner
   0x2c8d::pool::place_market_order<0x5145::ns::NS,0xdba3::usdc::USDC>
-state: 12 object(s) read or written (from effects), 0 created
+state: 12 object(s) read or written (from effects), 0 created; 10 verified against digests in the effects (2 only read: the effects record their version, not a digest)
 discovery: 2 run(s), 12 object(s) in the final input state
 executed in SP1: 587953 cycles (33ms)
 objects written (chain vs replay):
@@ -64,11 +64,19 @@ a zkVM is possible but costly (an interpreter loop per instruction, proven). mov
   at their input versions, compiles an image, executes it in SP1, and compares **every written
   object (BCS), every event (BCS), every address-balance change** with the chain — or, for a
   transaction that failed on chain, that it fails with the same abort code in the same module.
+  Input objects and the chain's outputs are verified against the digests certified in the
+  effects.
 * **Proving**: `movevm prove` proves and verifies any run on the local CPU prover.
 
 ### Results
 
-* Random samples of recent mainnet transactions (`scripts/replay-sample.py`): **TBD**.
+* **199 of 200** random recent mainnet transactions replayed byte-identically on the first run
+  of the final sampler (`scripts/replay-sample.py 200`, 66 s with 8 in parallel; the one
+  failure, a type added in a later package version, is fixed). Earlier samples found and fixed:
+  a GraphQL quirk returning the *latest* version of an upgraded package (we ran DeepBook v9 for
+  a v2 call), gas-coin semantics of address-balance gas (the gas coin takes the first new object
+  ID), sponsored transactions, framework versions (always the epoch's, not the linkage's), and
+  missing natives. Transactions from a year ago (May 2025) replay too.
 * DeepBook v3 unit tests: 404/404 (`scripts/test-packages.sh`).
 * Proving: **TBD** (`scripts/bench-replay.sh`).
 * Natives: **67 of 102** Sui framework natives implemented (`scripts/natives-coverage.py`); the
@@ -86,11 +94,16 @@ data certified by Sui validators, but they bound what a proof means:
 * **Address balances are not modelled as state.** Deposits/withdrawals are recorded and compared
   with the chain, but a withdrawal is not checked against the owner's available balance (those
   balances live outside the objects a transaction reads).
-* **The input state is trusted, not proven.** Sui has no global state root to prove objects
-  against. A proof says: *given* the input state with this hash, the transaction produces these
-  results. Every input object is fetched at the exact version the chain's effects record, and
-  the replay checks the outputs against the certified effects — but binding the input state to
-  the chain inside the proof is out of scope.
+* **The input state is checked outside the proof, not inside it.** Sui has no global state
+  root to prove objects against. A proof says: *given* the input state with this hash, the
+  transaction produces these results. The replay binds that state to the chain where Sui makes
+  it possible: every object the transaction wrote, and every shared object it read, is
+  re-hashed (`Blake2b("Object::" || object)`) and must equal the digest certified in the
+  transaction's effects; so must every chain-side output object it is compared against.
+  Dynamic-field children that were only *read* are recorded in the effects by version, not
+  digest — those come from the GraphQL endpoint unverified (counted in the output). The effects
+  themselves are taken from GraphQL; checking them against checkpoint signatures is out of
+  scope.
 * **Not supported** (clean error): `Publish`/`Upgrade` commands, system transactions,
   `Receiving` inputs, the unimplemented natives above, objects the GraphQL endpoint no longer
   serves (old history).
