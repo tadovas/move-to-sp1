@@ -273,6 +273,102 @@ pub async fn prove(
     })
 }
 
+/// The batch-aggregation program (`runtime/aggregator`), embedded at build time.
+pub const AGGREGATOR_ELF: &[u8] = include_bytes!(env!("MOVEVM_AGGREGATOR_ELF"));
+
+/// A compressed (recursive, constant-size) proof of a run, with its program's verifying key.
+pub struct RunProof {
+    pub proof: sp1_sdk::SP1ProofWithPublicValues,
+    pub vk: sp1_sdk::SP1VerifyingKey,
+}
+
+/// Prove a run with a compressed proof (to be aggregated), on the local CPU prover.
+pub async fn prove_compressed(elf: &[u8], inputs: &Inputs) -> Result<RunProof> {
+    let client = ProverClient::builder().cpu().build().await;
+    let pk = client
+        .setup(Elf::Dynamic(Arc::from(elf)))
+        .await
+        .map_err(|e| anyhow!("setup failed: {e}"))?;
+    let proof = client
+        .prove(&pk, stdin_of(inputs))
+        .compressed()
+        .await
+        .map_err(|e| anyhow!("proving failed: {e}"))?;
+    Ok(RunProof {
+        proof,
+        vk: pk.verifying_key().clone(),
+    })
+}
+
+/// The verifying key of a program (setup only).
+pub async fn verifying_key(elf: &[u8]) -> Result<sp1_sdk::SP1VerifyingKey> {
+    let client = ProverClient::builder().cpu().build().await;
+    let pk = client
+        .setup(Elf::Dynamic(Arc::from(elf)))
+        .await
+        .map_err(|e| anyhow!("setup failed: {e}"))?;
+    Ok(pk.verifying_key().clone())
+}
+
+/// One proof for a batch: the aggregation program verifies every run's compressed proof and
+/// commits `len(label) || label || n || (vk digest, sha256(public values))*` (see
+/// `runtime/aggregator`). Returns the timings of the aggregation proof (compressed) and its
+/// verification.
+pub async fn aggregate(label: &[u8], runs: &[RunProof]) -> Result<ProofReport> {
+    use std::time::Instant;
+    let client = ProverClient::builder().cpu().build().await;
+    let t = Instant::now();
+    let pk = client
+        .setup(Elf::Static(AGGREGATOR_ELF))
+        .await
+        .map_err(|e| anyhow!("setup failed: {e}"))?;
+    let setup = t.elapsed();
+    let mut stdin = SP1Stdin::new();
+    stdin.write_vec(label.to_vec());
+    stdin.write(&(runs.len() as u32));
+    for r in runs {
+        stdin.write(&r.vk.hash_u32());
+        stdin.write_vec(r.proof.public_values.to_vec());
+        let sp1_sdk::SP1Proof::Compressed(p) = &r.proof.proof else {
+            bail!("aggregation needs compressed proofs");
+        };
+        stdin.write_proof(*p.clone(), r.vk.vk.clone());
+    }
+    let t = Instant::now();
+    let proof = client
+        .prove(&pk, stdin)
+        .compressed()
+        .await
+        .map_err(|e| anyhow!("aggregation proving failed: {e}"))?;
+    let prove = t.elapsed();
+    let t = Instant::now();
+    client
+        .verify(&proof, pk.verifying_key(), None)
+        .map_err(|e| anyhow!("verification failed: {e}"))?;
+    let verify = t.elapsed();
+    let path = std::env::temp_dir().join("movevm-aggregate.bin");
+    proof
+        .save(&path)
+        .map_err(|e| anyhow!("saving the proof: {e}"))?;
+    Ok(ProofReport {
+        setup,
+        prove,
+        verify,
+        proof_bytes: std::fs::metadata(&path)?.len() as usize,
+        vkey: pk.verifying_key().bytes32(),
+        public_values: proof.public_values.to_vec(),
+    })
+}
+
+fn stdin_of(inputs: &Inputs) -> SP1Stdin {
+    let mut stdin = SP1Stdin::new();
+    stdin.write_vec(inputs.state.clone());
+    for a in &inputs.args {
+        stdin.write_vec(a.clone());
+    }
+    stdin
+}
+
 /// `kind (u8) || code (u64 LE) || len (u64 LE) || location`
 fn failure_record(r: &[u8]) -> Option<(u8, u64, String)> {
     let (&kind, r) = r.split_first()?;

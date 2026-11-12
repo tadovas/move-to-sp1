@@ -1,0 +1,10 @@
+[package]
+name = "move-aggregator"
+description = "SP1 program that verifies a batch of move2sp1 proofs (e.g. every transaction of a Sui checkpoint) and commits to them: one proof for the batch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sp1-zkvm = { version = "6.10.0", features = ["verify"] }
+sha2.workspace = true

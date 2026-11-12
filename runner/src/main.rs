@@ -54,6 +54,16 @@ enum Cmd {
         #[arg(long)]
         save: Option<PathBuf>,
     },
+    /// One proof for a batch of runs: each run directory (as `sui-replay` leaves them:
+    /// `image.elf`, `ctx.json`, `ptb.json`, `state_in.bin`) is proven with a compressed proof
+    /// (cached as `<dir>/proof-compressed.bin`), then an aggregation program verifies them all
+    /// inside SP1 and commits to them.
+    Aggregate {
+        /// Committed with the batch (e.g. `sui:checkpoint:150000003`).
+        #[arg(long, default_value = "batch")]
+        label: String,
+        dirs: Vec<PathBuf>,
+    },
     /// Print the program's entry signature.
     Info { elf: PathBuf },
     /// Run the unit tests compiled by `move2sp1 test` (a directory with `tests.json`).
@@ -62,6 +72,9 @@ enum Cmd {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if std::env::var_os("RUST_LOG").is_some() {
+        sp1_sdk::utils::setup_logger();
+    }
     match Cli::parse().cmd {
         Cmd::Info { elf } => {
             let abi = Abi::from_elf(&std::fs::read(&elf)?)?;
@@ -84,6 +97,7 @@ async fn main() -> Result<()> {
             ptb,
         } => run(elf, args, compact, state_in, state_out, ptb).await?,
         Cmd::Test { dir } => test(dir).await?,
+        Cmd::Aggregate { label, dirs } => aggregate(&label, &dirs).await?,
         Cmd::Prove {
             elf,
             args,
@@ -235,6 +249,71 @@ fn inputs(
         }
         None => Inputs::from_json(abi, state, args),
     }
+}
+
+/// `movevm aggregate`: prove each run (compressed, cached), then the batch.
+async fn aggregate(label: &str, dirs: &[PathBuf]) -> Result<()> {
+    use std::time::Instant;
+    let started = Instant::now();
+    let mut runs = vec![];
+    let mut total_cycles = 0u64;
+    for (i, dir) in dirs.iter().enumerate() {
+        let elf = std::fs::read(dir.join("image.elf"))
+            .with_context(|| format!("reading {}/image.elf", dir.display()))?;
+        let abi = Abi::from_elf(&elf)?;
+        let ctx = std::fs::read_to_string(dir.join("ctx.json"))?;
+        let inputs = inputs(
+            &abi,
+            &[ctx],
+            Some(&dir.join("state_in.bin")),
+            Some(&dir.join("ptb.json")),
+        )?;
+        let cycles = Executor::new().await.execute(&elf, &inputs).await?.cycles;
+        total_cycles += cycles;
+        let cached = dir.join("proof-compressed.bin");
+        let t = Instant::now();
+        let (run, how) = match sp1_sdk::SP1ProofWithPublicValues::load(&cached) {
+            Ok(proof) => {
+                let vk = movevm::verifying_key(&elf).await?;
+                (
+                    movevm::RunProof { proof, vk },
+                    "cached compressed proof, key setup in",
+                )
+            }
+            Err(_) => {
+                let r = movevm::prove_compressed(&elf, &inputs).await?;
+                r.proof
+                    .save(&cached)
+                    .map_err(|e| anyhow::anyhow!("saving the proof: {e}"))?;
+                (r, "compressed proof in")
+            }
+        };
+        println!(
+            "[{}/{}] {}: {cycles} cycles, {how} {:.1?}",
+            i + 1,
+            dirs.len(),
+            dir.file_name().unwrap_or_default().to_string_lossy(),
+            t.elapsed()
+        );
+        runs.push(run);
+    }
+    println!("aggregating {} proof(s) ...", runs.len());
+    let r = movevm::aggregate(label.as_bytes(), &runs).await?;
+    println!(
+        "batch proof: {} runs, {total_cycles} cycles in total; aggregation proved in {:.1?}, verified in {:.0?}; proof {} KiB",
+        runs.len(),
+        r.prove,
+        r.verify,
+        r.proof_bytes / 1024
+    );
+    println!("aggregator verifying key: {}", r.vkey);
+    println!(
+        "committed: label {label:?}, {} (verifying key, public-values digest) pairs; sha256 {}",
+        runs.len(),
+        short_hex(&sha256(&r.public_values))
+    );
+    println!("total wall time: {:.1?}", started.elapsed());
+    Ok(())
 }
 
 /// `movevm test <dir>`: run the unit tests compiled by `move2sp1 test` and compare each

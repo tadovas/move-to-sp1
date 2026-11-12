@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "sui"]
+members = ["core", "sui", "aggregator"]
 
 [workspace.package]
 version = "0.1.0"
