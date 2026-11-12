@@ -175,17 +175,45 @@ async fn main() -> Result<()> {
     keys.sort();
     keys.dedup();
     let mut objects = vec![];
+    // the digests the effects certify for the input objects (written, and shared read-only)
+    let mut certified: BTreeMap<String, &str> = BTreeMap::new();
+    for c in fx["changedObjects"].as_array().into_iter().flatten() {
+        if let (Some(id), Some(d)) = (c["objectId"].as_str(), c["inputDigest"].as_str()) {
+            certified.insert(norm(id), d);
+        }
+    }
+    for o in fx["unchangedConsensusObjects"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if let (Some(id), Some(d)) = (o["objectId"].as_str(), o["digest"].as_str()) {
+            certified.insert(norm(id), d);
+        }
+    }
+    let mut verified = 0;
     for (o, (id, v)) in chain.objects(&keys).await?.into_iter().zip(&keys) {
         let o = o.with_context(|| {
             format!("not available: input object {id} v{v} is not served by the GraphQL endpoint (history not retained)")
         })?;
+        if let Some(d) = certified.get(&norm(id)) {
+            ensure!(
+                o.verify(d),
+                "input object {id} v{v} does not match the digest certified in the effects"
+            );
+            verified += 1;
+        }
         extra_types.push(o.type_repr.clone());
         objects.push(state_object(&o)?);
     }
     println!(
-        "state: {} object(s) read or written (from effects), {} created",
+        "state: {} object(s) read or written (from effects), {} created; {verified} verified against digests in the effects{}",
         objects.len(),
-        absent.len()
+        absent.len(),
+        match objects.len() - verified {
+            0 => String::new(),
+            n => format!(" ({n} only read: the effects record their version, not a digest)"),
+        }
     );
 
     // packages and the image
@@ -457,7 +485,19 @@ fn compare(input: &[StateObject], output: &movevm::Output, effects: &Value) -> R
                 Some(_) => ("DIFF", "deleted on chain, still present in replay".into()),
             }
         } else {
-            let want = state_object(&chain_object(out)?.context("output object")?)?;
+            let chain_out = chain_object(out)?.context("output object")?;
+            let certified = effects["effectsJson"]["changedObjects"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|c| c["objectId"].as_str().map(norm) == Some(hex(&id)))
+                .and_then(|c| c["outputDigest"].as_str());
+            ensure!(
+                certified.is_some_and(|d| chain_out.verify(d)),
+                "chain output object 0x{} does not match the digest certified in the effects",
+                hex(&id)
+            );
+            let want = state_object(&chain_out)?;
             match ours.get(&id) {
                 None => ("DIFF", "missing in replay".into()),
                 Some(got) if *got == want => (
@@ -631,6 +671,8 @@ impl Packages {
             loaded.extend(p.type_origins.iter().map(|t| norm(&t.2)));
         }
         let mut deps = vec![];
+        // original -> (version, index in deps)
+        let mut dep_at: BTreeMap<String, (u64, usize)> = BTreeMap::new();
         for (original, (upgraded, version)) in &linkage {
             if loaded.contains(original) {
                 continue;
@@ -645,6 +687,7 @@ impl Packages {
             original_of.insert(upgraded.clone(), original.clone());
             loaded.insert(original.clone());
             loaded.extend(p.type_origins.iter().map(|t| norm(&t.2)));
+            dep_at.insert(original.clone(), (p.version, deps.len()));
             deps.push(bytecode(&p, original)?);
         }
         // packages that only define type arguments (e.g. coin types)
@@ -669,11 +712,21 @@ impl Packages {
             original_of.insert(a.clone(), original.clone());
             loaded.insert(a);
             if have {
-                continue; // another version of a package we have
+                // another version of a package we have: keep the newer (it has every type),
+                // unless the one we have is a called package (its version is the one run)
+                if let Some((v, i)) = dep_at.get(&original).copied()
+                    && p.version > v
+                {
+                    loaded.extend(p.type_origins.iter().map(|t| norm(&t.2)));
+                    deps[i] = bytecode(&p, &original)?;
+                    dep_at.insert(original, (p.version, i));
+                }
+                continue;
             }
             queue.extend(p.linkage.iter().map(|l| norm(&l.upgraded)));
             loaded.insert(original.clone());
             loaded.extend(p.type_origins.iter().map(|t| norm(&t.2)));
+            dep_at.insert(original.clone(), (p.version, deps.len()));
             deps.push(bytecode(&p, &original)?);
         }
         Ok(Packages {

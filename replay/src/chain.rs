@@ -216,6 +216,7 @@ impl Chain {
             })
             .collect::<Result<_>>()?;
         Ok(Package {
+            version: version.unwrap_or(0),
             modules,
             linkage,
             type_origins,
@@ -226,12 +227,12 @@ impl Chain {
 const EVENTS: &str = "events(first: 50) { pageInfo { hasNextPage endCursor } nodes { contents { type { repr } bcs } } }";
 const CHANGES: &str = concat!(
     "objectChanges(first: 50) { pageInfo { hasNextPage endCursor } nodes { address idCreated idDeleted outputState { ",
-    "address version owner { __typename ... on AddressOwner { address { address } } ... on ObjectOwner { address { address } } ... on ConsensusAddressOwner { address { address } } } asMoveObject { contents { type { repr } bcs } }",
+    "address version objectBcs owner { __typename ... on AddressOwner { address { address } } ... on ObjectOwner { address { address } } ... on ConsensusAddressOwner { address { address } } } asMoveObject { contents { type { repr } bcs } }",
     " } } }"
 );
 
 /// Object fields selected everywhere.
-const OBJECT: &str = r#"address version
+const OBJECT: &str = r#"address version objectBcs
     owner { __typename
         ... on AddressOwner { address { address } }
         ... on ObjectOwner { address { address } }
@@ -246,7 +247,43 @@ pub struct ChainObject {
     pub owner: Owner,
     /// Type as Sui prints it (`0x…::m::T<0x…::n::U>`).
     pub type_repr: String,
+    /// BCS of the Move value.
     pub bcs: Vec<u8>,
+    /// BCS of the whole object (owner, previous transaction, storage rebate, contents): its
+    /// digest is the hash of this.
+    pub object_bcs: Vec<u8>,
+}
+
+impl ChainObject {
+    /// Whether the object is the one with this (certified) digest: Blake2b-256 of
+    /// `"Object::" || object BCS` equals it, and the Move value used is the one inside.
+    pub fn verify(&self, certified: &str) -> bool {
+        use blake2::{Blake2b, Digest, digest::consts::U32};
+        let mut h = Blake2b::<U32>::new();
+        h.update(b"Object::");
+        h.update(&self.object_bcs);
+        let digest = bs58::encode(h.finalize()).into_string();
+        let mut contents = uleb(self.bcs.len() as u64);
+        contents.extend(&self.bcs);
+        digest == certified
+            && self
+                .object_bcs
+                .windows(contents.len())
+                .any(|w| w == contents.as_slice())
+    }
+}
+
+fn uleb(mut v: u64) -> Vec<u8> {
+    let mut out = vec![];
+    loop {
+        let b = (v & 0x7f) as u8;
+        v >>= 7;
+        if v == 0 {
+            out.push(b);
+            return out;
+        }
+        out.push(b | 0x80);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -284,11 +321,13 @@ impl ChainObject {
             owner,
             type_repr: contents["type"]["repr"].as_str().context("type")?.into(),
             bcs: b64(contents["bcs"].as_str().context("bcs")?)?,
+            object_bcs: b64(o["objectBcs"].as_str().unwrap_or_default())?,
         }))
     }
 }
 
 pub struct Package {
+    pub version: u64,
     pub modules: Vec<Vec<u8>>,
     pub linkage: Vec<Linkage>,
     /// (module, struct, defining ID)
