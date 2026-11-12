@@ -1,10 +1,30 @@
 #!/usr/bin/env bash
-# The demo, step by step (press Enter between steps). Set PROVE=0 to skip proving.
+# The demo, step by step.
+#
+# usage: scripts/demo.sh [-i]
+#   -i   interactive: pause before each step until a key is pressed (for recording)
+# env: PROVE=0 skips proving; CHECKPOINTS=A-B picks the checkpoints of step 7.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-step() { printf '\n\033[1;36m== %s\033[0m\n' "$*"; read -r -p "" _ || true; }
+interactive=0
+while getopts "i" opt; do
+  case $opt in
+    i) interactive=1 ;;
+    *) echo "usage: $0 [-i]" >&2; exit 2 ;;
+  esac
+done
+
+step() {
+  printf '\n\033[1;36m== %s\033[0m\n' "$*"
+  if [[ $interactive == 1 ]]; then
+    read -r -s -n 1 -p $'\033[2m(press any key)\033[0m' _ </dev/tty || true
+    printf '\r\033[K'
+  fi
+}
 run() { printf '\033[2m$ %s\033[0m\n' "$*"; "$@"; }
+
+mkdir -p out
 
 step "1. Compile Move source to a RISC-V ELF and run it in SP1"
 run target/release/move2sp1 build examples/fib.move -a demo=0x100 -e fib -o out/fib.elf
