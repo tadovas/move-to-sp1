@@ -4,7 +4,7 @@
 //!
 //! Encoding of the PTB (one SP1 stdin buffer, BCS conventions; produced by the runner):
 //! ```text
-//! Ptb     = vector<Input>, vector<Command>
+//! Ptb     = gas_price: u64, rgp: u64, gas_budget: u64, vector<Input>, vector<Command>
 //! Input   = 0 Object { id: address } | 1 Pure { bytes: vector<u8> }
 //! Command = 0 MoveCall { function: String, args: vector<Arg> }
 //! Arg     = 0 GasCoin | 1 Input(u16) | 2 Result(u16) | 3 NestedResult(u16, u16)
@@ -106,6 +106,8 @@ enum Arg {
 pub extern "C" fn move_rt_sui_run_ptb(ctx: *mut u8) {
     let buf: Vec<u8> = sp1_zkvm::io::read_vec();
     let mut r = Reader(&buf);
+    let gas = [r.u64(), r.u64(), r.u64()];
+    crate::tx::set_gas(gas[0], gas[1], gas[2]);
     let inputs: Vec<Input> = (0..r.uleb())
         .map(|_| match r.byte() {
             0 => Input::Object(r.address()),
@@ -231,6 +233,9 @@ impl<'a> Reader<'a> {
     }
     fn byte(&mut self) -> u8 {
         self.take(1)[0]
+    }
+    fn u64(&mut self) -> u64 {
+        u64::from_le_bytes(self.take(8).try_into().unwrap())
     }
     fn u16(&mut self) -> u16 {
         u16::from_le_bytes(self.take(2).try_into().unwrap())

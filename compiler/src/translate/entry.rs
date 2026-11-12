@@ -266,8 +266,14 @@ impl<'ctx> Translator<'ctx, '_> {
             .iter()
             .map(|t| (t.canonical(self.prog), t.display(self.prog)))
             .collect();
+        let effect_names: BTreeMap<String, String> = self
+            .effect_types
+            .iter()
+            .map(|t| (t.canonical(self.prog), t.display(self.prog)))
+            .collect();
         let json = json!({
             "entry": name, "params": params, "returns": returns, "effects": names(&self.effect_types),
+            "effect_names": effect_names,
             "state": state, "types": types, "fast": self.options.fast_points(),
         });
         Ok(EntryAbi {

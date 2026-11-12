@@ -1,0 +1,20 @@
+[package]
+name = "sui-replay"
+version = "0.1.0"
+edition = "2024"
+description = "Replay a Sui mainnet transaction in the SP1 zkVM (via move2sp1) and compare its effects with chain"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+bs58 = "0.5"
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+move2sp1 = { path = "../compiler" }
+movevm = { path = "../runner" }
+move-binary-format = { git = "https://github.com/MystenLabs/sui", rev = "1c2b97ab17ccd5fb43c445e44351bc269ddaf76f" }
+move-core-types = { git = "https://github.com/MystenLabs/sui", rev = "1c2b97ab17ccd5fb43c445e44351bc269ddaf76f" }

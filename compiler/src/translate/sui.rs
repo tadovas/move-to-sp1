@@ -396,8 +396,14 @@ impl<'ctx> Translator<'ctx, '_> {
         value: BasicValueEnum<'ctx>,
         recipient: Option<BasicValueEnum<'ctx>>,
     ) -> Result<()> {
-        let mut args: Vec<BasicMetadataValueEnum> =
-            vec![self.type_desc(ty)?.into(), self.spill(value)?.into()];
+        // effects carry the canonical type name (defining IDs), as Sui's type tags do
+        let (name, name_len) = self.const_bytes(ty.canonical(self.prog).as_bytes());
+        let mut args: Vec<BasicMetadataValueEnum> = vec![
+            self.type_desc(ty)?.into(),
+            name.into(),
+            self.ctx.i64_type().const_int(name_len, false).into(),
+            self.spill(value)?.into(),
+        ];
         if let Some(r) = recipient {
             args.push(self.spill(r)?.into());
         }

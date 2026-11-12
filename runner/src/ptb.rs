@@ -6,6 +6,8 @@
 //!   "commands": [ {"MoveCall": {"function": "0x…::pool::place_market_order<0x…::ns::NS, 0x…::usdc::USDC>",
 //!                               "args": [{"Input": 0}, {"Result": 0}, {"NestedResult": [1, 0]}, "GasCoin"]}} ] }
 //! ```
+//! Optional `"gas": {"price": 1000, "rgp": 1000, "budget": 0}` (default 0, as in Sui's unit
+//! tests) is what `tx_context::gas_price` etc. return; gas is not metered.
 //! Pure inputs are raw BCS (`0x` hex or `base64:`), or a JSON value with its type.
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -15,6 +17,9 @@ use crate::abi::Abi;
 
 pub fn encode(abi: &Abi, ptb: &Value) -> Result<Vec<u8>> {
     let mut out = vec![];
+    for k in ["price", "rgp", "budget"] {
+        out.extend(ptb["gas"][k].as_u64().unwrap_or(0).to_le_bytes());
+    }
     let inputs = ptb["inputs"]
         .as_array()
         .map(Vec::as_slice)

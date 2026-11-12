@@ -8,6 +8,7 @@
 pub mod abi;
 pub mod out;
 pub mod ptb;
+pub mod state;
 
 use std::sync::Arc;
 
@@ -16,7 +17,7 @@ use serde_json::Value;
 use sha2::Digest;
 use sp1_sdk::{Elf, LightProver, ProverClient, SP1Stdin, prelude::*};
 
-pub use abi::Abi;
+pub use abi::{Abi, EffectRecord};
 pub use out::Out;
 
 /// Failure record committed by the runtime (`runtime/core/src/lib.rs`, `ABORT_MAGIC`).
@@ -106,6 +107,8 @@ pub struct Output {
     pub results: Vec<Out>,
     /// Events and object transfers / shares / freezes.
     pub effects: Out,
+    /// The same, undecoded.
+    pub effect_records: Vec<EffectRecord>,
     /// SHA-256 of the input state, as committed by the program.
     pub state_in_hash: [u8; 32],
     /// The output state snapshot (input of the next run).
@@ -225,6 +228,7 @@ fn decode_output(abi: &Abi, pv: &[u8]) -> Result<Output> {
         .iter()
         .map(|ty| abi.decode(ty, &mut out))
         .collect::<Result<_>>()?;
+    let effect_records = abi::effect_records(&mut { out })?;
     let effects = abi.decode_effects(&mut out)?;
     let state_in_hash: [u8; 32] = out.get(..32).context("missing state section")?.try_into()?;
     out = &out[32..];
@@ -232,6 +236,7 @@ fn decode_output(abi: &Abi, pv: &[u8]) -> Result<Output> {
     Ok(Output {
         results,
         effects,
+        effect_records,
         state_in_hash,
         state_out,
     })

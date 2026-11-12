@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["compiler", "runner"]
+members = ["compiler", "runner", "replay"]
 # `runtime/` is a separate workspace: it targets the SP1 zkVM with Succinct's toolchain and is
 # built by `compiler/build.rs`.
 exclude = ["runtime"]

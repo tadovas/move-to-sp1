@@ -26,6 +26,8 @@ pub struct Abi {
     pub fast: Vec<String>,
     /// Types that can be stored in the state: canonical name -> display name.
     state_names: HashMap<String, String>,
+    /// Types of effects: canonical name -> display name.
+    effect_names: HashMap<String, String>,
     types: HashMap<String, TypeDef>,
 }
 
@@ -87,6 +89,12 @@ impl Abi {
             effects: strings(&j["effects"]),
             fast: strings(&j["fast"]),
             state_names: j["state"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("?").to_string()))
+                .collect(),
+            effect_names: j["effect_names"]
                 .as_object()
                 .into_iter()
                 .flatten()
@@ -331,7 +339,12 @@ impl Abi {
         for _ in 0..n {
             let tag = take(input, 1)?[0];
             let len = read_uleb128(input)? as usize;
-            let ty = String::from_utf8(take(input, len)?.to_vec())?;
+            let canonical = String::from_utf8(take(input, len)?.to_vec())?;
+            let ty = self
+                .effect_names
+                .get(&canonical)
+                .cloned()
+                .unwrap_or_else(|| short_type_name(&canonical));
             let mut e = vec![(
                 "kind".to_string(),
                 Out::Str(
@@ -357,6 +370,39 @@ impl Abi {
         }
         Ok(Out::Array(effects))
     }
+}
+
+/// One effect as committed, undecoded (see `runtime/sui/src/effects.rs`).
+#[derive(Clone, Debug)]
+pub struct EffectRecord {
+    /// 0 event, 1 transfer, 2 share, 3 freeze
+    pub tag: u8,
+    /// Canonical type name.
+    pub type_name: String,
+    pub recipient: Option<[u8; 32]>,
+    pub bcs: Vec<u8>,
+}
+
+/// The effects section, undecoded.
+pub fn effect_records(input: &mut &[u8]) -> Result<Vec<EffectRecord>> {
+    let n = read_uleb128(input)?;
+    (0..n)
+        .map(|_| {
+            let tag = take(input, 1)?[0];
+            let type_name = String::from_utf8(read_bytes(input)?.to_vec())?;
+            let recipient = if tag == 1 {
+                Some(take(input, 32)?.try_into()?)
+            } else {
+                None
+            };
+            Ok(EffectRecord {
+                tag,
+                type_name,
+                recipient,
+                bcs: read_bytes(input)?.to_vec(),
+            })
+        })
+        .collect()
 }
 
 const OPTION: &str = "option::Option<";
@@ -457,6 +503,10 @@ fn uleb128(mut v: u64, out: &mut Vec<u8>) {
         }
         out.push(b | 0x80);
     }
+}
+
+pub(crate) fn read_uleb(input: &mut &[u8]) -> Result<u64> {
+    read_uleb128(input)
 }
 
 fn read_uleb128(input: &mut &[u8]) -> Result<u64> {

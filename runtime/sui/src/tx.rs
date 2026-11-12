@@ -109,6 +109,15 @@ fn fresh_id(fast: bool) -> Address {
     })
 }
 
+/// Gas parameters of a transaction run as a PTB (the PTB's gas header).
+pub(crate) fn set_gas(gas_price: u64, rgp: u64, gas_budget: u64) {
+    TX.with(|tx| {
+        tx.gas_price = gas_price;
+        tx.rgp = rgp;
+        tx.gas_budget = gas_budget;
+    });
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn move_rt_sui_rgp() -> u64 {
     TX.with(|tx| tx.rgp)

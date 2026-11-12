@@ -2,7 +2,7 @@
 //!
 //! Recorded during the run and committed to the public values after the entry results by
 //! `move_rt_finish`, so a proof attests to them. Encoding (BCS):
-//! `vector<Effect>` where each effect is `tag: u8, type: String, [recipient: address], value: vector<u8>`
+//! `vector<Effect>` where each effect is `tag: u8, type: String (canonical name), [recipient: address], value: vector<u8>`
 //! with tags 0 = event, 1 = transfer, 2 = share, 3 = freeze, and `value` the BCS of the object.
 
 use alloc::vec::Vec;
@@ -23,13 +23,16 @@ const FREEZE: u8 = 3;
 /// (number of effects, their encoding)
 static LOG: Global<(u64, Vec<u8>)> = Global::new((0, Vec::new()));
 
-fn record(tag: u8, v: Value, recipient: Option<&Address>) {
+/// # Safety
+/// `name` points to `name_len` bytes.
+unsafe fn record(tag: u8, v: Value, name: *const u8, name_len: u64, recipient: Option<&Address>) {
     let mut value = Vec::new();
     bcs::encode(v, &mut value);
+    // SAFETY: guaranteed by the caller.
+    let name = unsafe { core::slice::from_raw_parts(name, name_len as usize) };
     LOG.with(|(n, out)| {
         *n += 1;
         out.push(tag);
-        let name = v.desc().name().as_bytes();
         bcs::uleb128(name.len() as u64, out);
         out.extend_from_slice(name);
         if let Some(r) = recipient {
@@ -41,41 +44,62 @@ fn record(tag: u8, v: Value, recipient: Option<&Address>) {
 }
 
 /// # Safety
-/// `p` points to an initialized value of type `d`.
+/// `p` points to an initialized value of type `d`; `name` to `name_len` bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn move_rt_sui_emit(d: &TypeDesc, p: *const u8) {
+pub unsafe extern "C" fn move_rt_sui_emit(
+    d: &TypeDesc,
+    name: *const u8,
+    name_len: u64,
+    p: *const u8,
+) {
     // SAFETY: guaranteed by the caller.
-    record(EVENT, unsafe { Value::new(d, p) }, None);
+    unsafe { record(EVENT, Value::new(d, p), name, name_len, None) };
 }
 
 /// # Safety
-/// `p` points to an initialized object of type `d`.
+/// `p` points to an initialized object of type `d`; `name` to `name_len` bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn move_rt_sui_transfer(d: &TypeDesc, p: *const u8, recipient: &Address) {
+pub unsafe extern "C" fn move_rt_sui_transfer(
+    d: &TypeDesc,
+    name: *const u8,
+    name_len: u64,
+    p: *const u8,
+    recipient: &Address,
+) {
     // SAFETY: guaranteed by the caller.
-    record(TRANSFER, unsafe { Value::new(d, p) }, Some(recipient));
+    unsafe { record(TRANSFER, Value::new(d, p), name, name_len, Some(recipient)) };
     // Owned by `recipient` from now on (`test_scenario::take_from_address`).
     // SAFETY: as above.
     unsafe { crate::store::put(Some(*recipient), d, p) };
 }
 
 /// # Safety
-/// `p` points to an initialized object of type `d`.
+/// `p` points to an initialized object of type `d`; `name` to `name_len` bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn move_rt_sui_share(d: &TypeDesc, p: *const u8) {
+pub unsafe extern "C" fn move_rt_sui_share(
+    d: &TypeDesc,
+    name: *const u8,
+    name_len: u64,
+    p: *const u8,
+) {
     // SAFETY: guaranteed by the caller.
-    record(SHARE, unsafe { Value::new(d, p) }, None);
+    unsafe { record(SHARE, Value::new(d, p), name, name_len, None) };
     // Shared objects stay available to later transactions (`test_scenario::take_shared`).
     // SAFETY: as above.
     unsafe { crate::store::put(None, d, p) };
 }
 
 /// # Safety
-/// `p` points to an initialized object of type `d`.
+/// `p` points to an initialized object of type `d`; `name` to `name_len` bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn move_rt_sui_freeze(d: &TypeDesc, p: *const u8) {
+pub unsafe extern "C" fn move_rt_sui_freeze(
+    d: &TypeDesc,
+    name: *const u8,
+    name_len: u64,
+    p: *const u8,
+) {
     // SAFETY: guaranteed by the caller.
-    record(FREEZE, unsafe { Value::new(d, p) }, None);
+    unsafe { record(FREEZE, Value::new(d, p), name, name_len, None) };
 }
 
 /// Platform hook called by the entry glue after the results: commit the effects, then the
