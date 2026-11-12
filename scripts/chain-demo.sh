@@ -11,9 +11,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 PROFILE=${PROFILE:-debug}
 [[ $PROFILE == release ]] && REL=--release || REL=
-(cd compiler && cargo build -q $REL) && (cd runner && cargo build -q $REL)
-M2S=compiler/target/$PROFILE/move2sp1
-VM=runner/target/$PROFILE/movevm
+cargo build -q $REL
+M2S=target/$PROFILE/move2sp1
+VM=target/$PROFILE/movevm
 PKG=examples/deepbook-v3-chain
 OUT=out/chain
 mkdir -p $OUT && rm -f $OUT/*.bcs

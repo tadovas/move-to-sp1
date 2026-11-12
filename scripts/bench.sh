@@ -5,9 +5,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-(cd compiler && cargo build -q --release) && (cd runner && cargo build -q --release)
-M2S=compiler/target/release/move2sp1
-VM=runner/target/release/movevm
+cargo build -q --release
+M2S=target/release/move2sp1
+VM=target/release/movevm
 mkdir -p out bench
 "$M2S" build examples/amm.move -a demo=0x100 -e apply -o out/amm.elf 2>/dev/null
 

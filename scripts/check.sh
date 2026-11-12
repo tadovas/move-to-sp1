@@ -4,9 +4,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-(cd compiler && cargo build -q) && (cd runner && cargo build -q)
-M2S=compiler/target/debug/move2sp1
-VM=runner/target/debug/movevm
+cargo build -q
+M2S=target/debug/move2sp1
+VM=target/debug/movevm
 mkdir -p out
 
 pass=0 fail=0

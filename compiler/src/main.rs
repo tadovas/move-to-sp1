@@ -1,23 +1,11 @@
-//! move2sp1: compile Move to RISC-V ELF programs for the SP1 zkVM.
-//!
-//! Pipeline: Move source --(frontend: Sui's move-compiler)--> bytecode
-//! --(translate)--> LLVM IR --(target: LLVM)--> riscv64 object --(link + runtime)--> ELF.
-
-mod frontend;
-mod link;
-mod package;
-mod target;
-mod translate;
+//! `move2sp1`: CLI over the `move2sp1` library (see `lib.rs`).
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
-use inkwell::context::Context;
-use move_compiler::editions::Edition;
+use move2sp1::{Entry, Expected, Options, Sources};
 use serde_json::json;
-
-use frontend::{Compiled, Expected, SourcePackage};
 
 #[derive(Parser)]
 #[command(
@@ -98,7 +86,7 @@ fn parse_addr(s: &str) -> Result<(String, String), String> {
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Dump { input } => {
-            for m in &load(&input, false)?.targets {
+            for m in &move2sp1::load(&input.sources(), false)?.targets {
                 println!("{m:#?}");
             }
         }
@@ -110,19 +98,24 @@ fn main() -> Result<()> {
             publish,
             emit_llvm,
         } => {
-            let compiled = load(&input, test_mode)?;
-            let what = if publish {
+            let compiled = move2sp1::load(&input.sources(), test_mode)?;
+            let entry = if publish {
                 Entry::Publish
             } else {
                 Entry::Function(&entry)
             };
-            let (elf, abi) = build_elf(&compiled, what, &input, emit_llvm.as_deref())?;
-            std::fs::write(&output, &elf)?;
+            let options = Options {
+                emit_llvm,
+                ..input.options()?
+            };
+            let program = move2sp1::build(&compiled, entry, &options)?;
+            std::fs::write(&output, &program.elf)?;
+            let abi = &program.abi;
             eprintln!(
                 "{} -> {} ({} bytes, entry {}({}) -> ({}))",
                 describe(&input.sources),
                 output.display(),
-                elf.len(),
+                program.elf.len(),
                 abi.name,
                 abi.params.join(", "),
                 abi.returns.join(", "),
@@ -137,106 +130,35 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Front end: a package directory (resolved through `Move.toml`) or loose `.move` files.
-fn load(input: &Input, test_mode: bool) -> Result<Compiled> {
-    let (packages, mut addresses) = match input.sources.as_slice() {
-        [dir] if dir.join("Move.toml").is_file() => {
-            let g = package::load(dir, test_mode)?;
-            (g.packages, g.addresses)
+impl Input {
+    fn sources(&self) -> Sources {
+        Sources {
+            paths: self.sources.clone(),
+            addresses: self.addresses.clone(),
         }
-        [dir] if dir.is_dir() => bail!("{} has no Move.toml", dir.display()),
-        files => {
-            let pkg = SourcePackage {
-                name: "main".into(),
-                edition: Edition::E2024,
-                sources: files.to_vec(),
-            };
-            (vec![pkg], vec![])
-        }
-    };
-    // command-line assignments win
-    addresses.retain(|(name, _)| !input.addresses.iter().any(|(n, _)| n == name));
-    addresses.extend(input.addresses.iter().cloned());
-    frontend::compile(&packages, &addresses, test_mode)
-}
-
-/// What a program runs.
-#[derive(Clone, Copy)]
-enum Entry<'a> {
-    /// A Move function: `module::function` or `function`.
-    Function(&'a str),
-    /// Every module's `init` (package publish).
-    Publish,
-}
-
-/// Translate, optimize and link one entry point into an SP1 ELF.
-fn build_elf(
-    compiled: &Compiled,
-    entry: Entry,
-    input: &Input,
-    emit_llvm: Option<&Path>,
-) -> Result<(Vec<u8>, translate::EntryAbi)> {
-    let modules: Vec<_> = compiled.targets.iter().chain(&compiled.deps).collect();
-    let prog = translate::Program::new(modules);
-    let candidates: Vec<usize> = (0..compiled.targets.len()).collect();
-
-    // bytecode -> LLVM IR
-    let ctx = Context::create();
-    let tm = target::machine()?;
-    let mut translator = translate::Translator::new(
-        &ctx,
-        &prog,
-        tm.get_target_data(),
-        translate::Options { fast: input.fast },
-    );
-    let abi = match entry {
-        Entry::Function(name) => translator.compile(prog.lookup_entry(name, &candidates)?)?,
-        Entry::Publish => translator.compile_publish(&prog.init_functions())?,
-    };
-    if let Some(p) = emit_llvm {
-        target::prepare(translator.module(), &tm);
-        translator
-            .module()
-            .print_to_file(p)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
     }
 
-    // LLVM IR -> riscv64 object
-    let obj = target::emit_object(translator.module(), &tm, "O2")?;
-
-    // link with the runtime into an SP1 ELF
-    let rt_owned;
-    let rt: &[u8] = match &input.runtime {
-        Some(p) => {
-            rt_owned = std::fs::read(p).with_context(|| format!("reading {}", p.display()))?;
-            &rt_owned
-        }
-        None => target::RUNTIME_LIB,
-    };
-    let mut objects = vec![link::InputObject {
-        name: "program.o".into(),
-        data: &obj,
-    }];
-    let members = link::select_archive_members(&objects, &[("libmove_rt_sui.a", rt)], &["_start"])?;
-    objects.extend(members);
-    let notes = [link::NoteSection {
-        name: ".move2sp1.abi".into(),
-        data: abi.to_json().into_bytes(),
-    }];
-    Ok((link::link(&objects, &notes, "_start")?, abi))
+    fn options(&self) -> Result<Options> {
+        let runtime = self
+            .runtime
+            .as_deref()
+            .map(move2sp1::read_runtime)
+            .transpose()?;
+        Ok(Options {
+            fast: self.fast,
+            runtime,
+            emit_llvm: None,
+        })
+    }
 }
 
 /// `move2sp1 test`: one ELF per `#[test]` and a manifest of expected outcomes.
 fn test(input: &Input, out: &Path, filter: Option<&str>) -> Result<()> {
-    let compiled = load(input, true)?;
+    let compiled = move2sp1::load(&input.sources(), true)?;
     std::fs::create_dir_all(out)?;
     let mut manifest = vec![];
     let (mut built, mut failed) = (0, 0);
-    for t in compiled
-        .tests
-        .iter()
-        .filter(|t| filter.is_none_or(|f| t.name.contains(f)))
-    {
+    for (t, program) in move2sp1::build_tests(&compiled, &input.options()?, filter) {
         let expected = match &t.expected {
             Expected::Success => json!("success"),
             Expected::Abort(code, location) => json!({ "abort": code, "location": location }),
@@ -245,9 +167,9 @@ fn test(input: &Input, out: &Path, filter: Option<&str>) -> Result<()> {
             }
         };
         let elf_name = format!("{}.elf", t.name.replace("::", "__"));
-        match build_elf(&compiled, Entry::Function(&t.name), input, None) {
-            Ok((elf, _)) => {
-                std::fs::write(out.join(&elf_name), elf)?;
+        match program {
+            Ok(program) => {
+                std::fs::write(out.join(&elf_name), program.elf)?;
                 manifest.push(json!({ "name": t.name, "elf": elf_name, "expected": expected }));
                 built += 1;
             }

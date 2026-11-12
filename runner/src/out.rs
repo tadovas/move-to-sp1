@@ -5,6 +5,7 @@
 
 use std::fmt::Write;
 
+#[derive(Clone, Debug)]
 pub enum Out {
     Null,
     Bool(bool),

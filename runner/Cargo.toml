@@ -15,7 +15,3 @@ clap = { version = "4", features = ["derive"] }
 # `profiling`: the executor honours cycle-tracker markers (fidelity point accounting)
 sp1-sdk = { version = "6.10.0", features = ["profiling"] }
 tokio = { version = "1", features = ["full"] }
-
-# The SP1 executor is unusably slow unoptimized; optimize dependencies even in dev builds.
-[profile.dev.package."*"]
-opt-level = 3
