@@ -78,7 +78,22 @@ a zkVM is possible but costly (an interpreter loop per instruction, proven). mov
   ID), sponsored transactions, framework versions (always the epoch's, not the linkage's), and
   missing natives. Transactions from a year ago (May 2025) replay too.
 * DeepBook v3 unit tests: 404/404 (`scripts/test-packages.sh`).
-* Proving: **TBD** (`scripts/bench-replay.sh`).
+* **Proving real mainnet transactions on a laptop** (`scripts/bench-replay.sh`: replay, check
+  against chain, then prove and verify exactly that run; SP1 6.10 CPU prover, Apple M1 Max, 10
+  cores, no GPU):
+
+  | transaction | PTB | cycles | prove | verify | proof |
+  |---|---|---|---|---|---|
+  | DeepBook v3 market order (`AjzaKV…`) | 2 Move calls | 596k | 26.2 s | 85 ms | 2.7 MiB |
+  | DeFi route (`4R9QDP…`) | 26 calls, 2 splits, 2 merges, address-balance withdrawal | 576k | 27.2 s | 85 ms | 2.7 MiB |
+  | lending repay (`Haf4Th…`) | 2 calls, 2 splits, 2 merges, gas reservation | 863k | 30.2 s | 85 ms | 2.7 MiB |
+  | 17 Move calls (`8zj6P6…`) | 17 calls | 1.61M | 37.8 s | 86 ms | 2.7 MiB |
+  | ed25519 signature checks (`8sc3Gw…`) | 13 calls | 2.64M | 82.8 s | 322 ms | 9.8 MiB |
+  | DeepBook market order, **compressed** proof | 2 Move calls | 596k | 60.8 s | 36 ms | 1.2 MiB |
+
+  Core proofs; "compressed" is SP1's constant-size recursive proof. A trivial program (`add`)
+  takes ~22 s, so most of the time for typical transactions is the prover's fixed cost.
+  Replay execution alone (no proof) takes 15–100 ms per transaction in SP1's executor.
 * Natives: **67 of 102** Sui framework natives implemented (`scripts/natives-coverage.py`); the
   rest are mostly heavy cryptography (BLS12-381, Groth16, group operations, Poseidon, VRF, VDF,
   zkLogin, Nitro attestation) and stop with a clean "unsupported native" error at compile time.
