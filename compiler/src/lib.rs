@@ -19,7 +19,7 @@ use inkwell::context::Context;
 use move_compiler::editions::Edition;
 
 pub use frontend::{Compiled, Expected, SourcePackage, UnitTest};
-pub use translate::EntryAbi;
+pub use translate::{EntryAbi, TypeOrigin};
 
 /// Where the Move code comes from.
 #[derive(Clone, Debug, Default)]
@@ -83,10 +83,45 @@ pub fn load(sources: &Sources, test_mode: bool) -> Result<Compiled> {
     frontend::compile(&packages, &addresses, test_mode)
 }
 
+/// A package given as bytecode (e.g. fetched from chain).
+#[derive(Clone, Debug, Default)]
+pub struct BytecodePackage {
+    /// Serialized modules (`.mv`).
+    pub modules: Vec<Vec<u8>>,
+    /// Where its types were defined (upgraded packages; see `translate::TypeOrigin`).
+    pub type_origins: Vec<translate::TypeOrigin>,
+}
+
+/// Load packages from bytecode, without the source front end or the embedded frameworks
+/// (provide `0x1` / `0x2` too). Modules of `roots` are the program's own (entry candidates).
+pub fn load_bytecode(roots: &[BytecodePackage], deps: &[BytecodePackage]) -> Result<Compiled> {
+    use anyhow::Context as _;
+    let modules = |pkgs: &[BytecodePackage]| -> Result<Vec<move_binary_format::CompiledModule>> {
+        pkgs.iter()
+            .flat_map(|p| &p.modules)
+            .map(|b| {
+                move_binary_format::CompiledModule::deserialize_with_defaults(b)
+                    .context("bad module bytecode")
+            })
+            .collect()
+    };
+    let type_origins = roots
+        .iter()
+        .chain(deps)
+        .flat_map(|p| p.type_origins.clone())
+        .collect();
+    Ok(Compiled {
+        targets: modules(roots)?,
+        deps: modules(deps)?,
+        tests: vec![],
+        type_origins,
+    })
+}
+
 /// Translate, optimize and link one entry point into an SP1 ELF.
 pub fn build(compiled: &Compiled, entry: Entry, options: &Options) -> Result<Program> {
     let modules: Vec<_> = compiled.targets.iter().chain(&compiled.deps).collect();
-    let prog = translate::Program::new(modules);
+    let prog = translate::Program::new(modules).with_type_origins(&compiled.type_origins);
     let candidates: Vec<usize> = (0..compiled.targets.len()).collect();
 
     // bytecode -> LLVM IR

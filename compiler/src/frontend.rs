@@ -59,6 +59,8 @@ pub struct Compiled {
     pub deps: Vec<CompiledModule>,
     /// Unit tests of the root package (test mode only).
     pub tests: Vec<UnitTest>,
+    /// Where types of upgraded packages were defined (bytecode from chain; empty for source).
+    pub type_origins: Vec<crate::translate::TypeOrigin>,
 }
 
 /// A `#[test]` function and its expected outcome.
@@ -216,6 +218,7 @@ pub fn compile(
         targets,
         deps,
         tests,
+        type_origins: vec![],
     })
 }
 

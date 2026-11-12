@@ -42,13 +42,46 @@ pub enum Datatype {
     Enum(EnumId),
 }
 
+/// Where a type of an upgraded package was defined: modules keep the package's *original*
+/// address, but a type's identity (type tags, `type_name`, object / event types) uses the
+/// address of the package version that introduced it.
+#[derive(Clone, Debug)]
+pub struct TypeOrigin {
+    /// The module's (original) address.
+    pub original: AccountAddress,
+    pub module: String,
+    pub name: String,
+    pub defining: AccountAddress,
+}
+
 pub struct Program<'a> {
     modules: Vec<&'a CompiledModule>,
+    /// (module address, module, type) -> defining address, for upgraded packages.
+    origins: std::collections::HashMap<(AccountAddress, String, String), AccountAddress>,
 }
 
 impl<'a> Program<'a> {
     pub fn new(modules: Vec<&'a CompiledModule>) -> Self {
-        Self { modules }
+        Self {
+            modules,
+            origins: Default::default(),
+        }
+    }
+
+    pub fn with_type_origins(mut self, origins: &[TypeOrigin]) -> Self {
+        for o in origins {
+            self.origins
+                .insert((o.original, o.module.clone(), o.name.clone()), o.defining);
+        }
+        self
+    }
+
+    /// The address identifying type `name` of module `m`: where it was defined (for upgraded
+    /// packages), else the module's address.
+    pub fn defining_address(&self, m: ModuleIdx, name: &str) -> AccountAddress {
+        let cm = self.modules[m];
+        let key = (*cm.address(), cm.name().to_string(), name.to_string());
+        self.origins.get(&key).copied().unwrap_or(*cm.address())
     }
 
     pub fn module(&self, m: ModuleIdx) -> &'a CompiledModule {
@@ -143,6 +176,20 @@ impl<'a> Program<'a> {
             module: m,
             def: EnumDefinitionIndex(i as u16),
         }))
+    }
+
+    /// A datatype named by its *defining* address (types of upgraded packages).
+    pub fn datatype_by_defining(
+        &self,
+        defining: &AccountAddress,
+        module: &str,
+        name: &str,
+    ) -> Option<Datatype> {
+        let ((original, ..), _) = self
+            .origins
+            .iter()
+            .find(|((_, m, n), d)| *d == defining && m == module && n == name)?;
+        self.datatype_by_name(original, module, name)
     }
 
     /// A function by address, module and name, if loaded.

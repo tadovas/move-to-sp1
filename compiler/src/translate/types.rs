@@ -144,28 +144,43 @@ impl Type {
     /// Sui's canonical type string (what `std::type_name` returns): addresses as 64 hex
     /// digits without `0x`, type arguments separated by `,` without spaces, e.g.
     /// `0000…0002::coin::Coin<0000…0002::sui::SUI>`.
+    /// Types of upgraded packages are named by their defining address (see `TypeOrigin`).
     pub fn canonical(&self, prog: &Program) -> String {
+        self.canonical_with(prog, true)
+    }
+
+    /// `defining`: name types by their defining address (Sui type tags, `with_defining_ids`),
+    /// or by their package's original address (`with_original_ids`).
+    pub fn canonical_with(&self, prog: &Program, defining: bool) -> String {
         let datatype = |m: ModuleIdx, name: String, args: &[Type]| {
             let cm = prog.module(m);
-            let args = args.iter().map(|a| a.canonical(prog)).collect::<Vec<_>>();
+            let args = args
+                .iter()
+                .map(|a| a.canonical_with(prog, defining))
+                .collect::<Vec<_>>();
             let args = if args.is_empty() {
                 String::new()
             } else {
                 format!("<{}>", args.join(","))
             };
             let name = name.rsplit("::").next().unwrap().to_string();
+            let addr = if defining {
+                prog.defining_address(m, &name)
+            } else {
+                *cm.address()
+            };
             format!(
                 "{}::{}::{}{args}",
-                cm.address().to_canonical_string(false),
+                addr.to_canonical_string(false),
                 cm.name(),
                 name
             )
         };
         match self {
-            Type::Vector(e) => format!("vector<{}>", e.canonical(prog)),
+            Type::Vector(e) => format!("vector<{}>", e.canonical_with(prog, defining)),
             Type::Struct(id, args) => datatype(id.module, prog.struct_name(*id), args),
             Type::Enum(id, args) => datatype(id.module, prog.enum_name(*id), args),
-            Type::Ref(t) => t.canonical(prog),
+            Type::Ref(t) => t.canonical_with(prog, defining),
             scalar => scalar.display(prog),
         }
     }
@@ -211,6 +226,7 @@ impl Type {
                 .map_err(|e| anyhow!("bad address in {s}: {e}"))?;
                 let d = prog
                     .datatype_by_name(&addr, module, name)
+                    .or_else(|| prog.datatype_by_defining(&addr, module, name))
                     .ok_or_else(|| anyhow!("type {s} not loaded"))?;
                 Self::datatype(d, args)
             }
@@ -221,8 +237,9 @@ impl Type {
     pub fn type_tag(&self, prog: &Program) -> Result<TypeTag> {
         let datatype = |m: ModuleIdx, name: String, args: &[Type]| -> Result<TypeTag> {
             let cm = prog.module(m);
+            let short = name.rsplit("::").next().unwrap();
             Ok(TypeTag::Struct(Box::new(StructTag {
-                address: *cm.address(),
+                address: prog.defining_address(m, short),
                 module: cm.name().to_owned(),
                 name: Identifier::new(name.rsplit("::").next().unwrap())?,
                 type_params: args
@@ -244,6 +261,21 @@ impl Type {
             Type::Struct(id, args) => datatype(id.module, prog.struct_name(*id), args)?,
             Type::Enum(id, args) => datatype(id.module, prog.enum_name(*id), args)?,
             Type::Ref(_) => bail!("references have no type tag"),
+        })
+    }
+
+    /// For a struct/enum: its defining address (`defining`) or its package's original address.
+    pub fn datatype_address(&self, prog: &Program, defining: bool) -> Option<AccountAddress> {
+        let (m, name) = match self {
+            Type::Struct(id, _) => (id.module, prog.struct_name(*id)),
+            Type::Enum(id, _) => (id.module, prog.enum_name(*id)),
+            _ => return None,
+        };
+        let short = name.rsplit("::").next().unwrap();
+        Some(if defining {
+            prog.defining_address(m, short)
+        } else {
+            *prog.module(m).address()
         })
     }
 

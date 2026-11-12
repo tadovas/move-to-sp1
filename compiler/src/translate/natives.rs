@@ -156,19 +156,20 @@ impl<'ctx> Translator<'ctx, '_> {
             // Resolved at compile time; without package upgrades, defining == original ids.
             "type_name::with_defining_ids" | "type_name::with_original_ids" => {
                 let (_, returns) = self.signature(f)?;
-                let name = t(0).canonical(self.prog);
+                let name = t(0).canonical_with(self.prog, name.ends_with("defining_ids"));
                 let bytes = self.vec_from_bytes(name.as_bytes())?;
                 let v = self.wrap_bytes(&returns[0], bytes.into())?;
                 fr.push(v, returns[0].clone());
             }
             "type_name::defining_id" | "type_name::original_id" => {
-                let Some(m) = t(0).defining_module() else {
+                let Some(addr) = t(0).datatype_address(self.prog, name.ends_with("defining_id"))
+                else {
                     bail!(
                         "{name}<{}>: not a struct or enum type",
                         t(0).display(self.prog)
                     );
                 };
-                let addr = self.prog.module(m).address().into_bytes();
+                let addr = addr.into_bytes();
                 fr.push(self.const_int_le(256, &addr), Type::Address);
             }
             "hash::sha2_256" | "hash::sha3_256" => {

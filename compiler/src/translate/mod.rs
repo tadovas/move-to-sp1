@@ -56,7 +56,7 @@ use inkwell::{
 };
 
 pub use entry::EntryAbi;
-pub use program::{FnId, Program};
+pub use program::{FnId, Program, TypeOrigin};
 pub use types::{Type, split_type_args};
 
 /// Translation options. Defaults are faithful to Sui; optimisations are opt-in.
