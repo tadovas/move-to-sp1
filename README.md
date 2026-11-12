@@ -36,6 +36,8 @@ address balances (net change, chain vs replay; gas part from chain):
 MATCH: every written object and event is byte-identical to mainnet
 ```
 
+The transaction above on the explorer: [AjzaKVKPjr49AZk68PpKJzo3D7spa753oMgnrA8DPGdq](https://suiscan.xyz/mainnet/tx/AjzaKVKPjr49AZk68PpKJzo3D7spa753oMgnrA8DPGdq).
+
 ## Why
 
 Sui executes Move in a VM on its validators; checking a Sui execution means re-running it on a
@@ -86,26 +88,38 @@ backed by SP1's precompiles (SHA-256, Keccak, secp256k1/r1, ed25519, BLS12-381).
 
 | sample | transactions | byte-identical | other |
 |---|---|---|---|
-| checkpoints 344,393,000–019 (20 consecutive, ~5 s of Sui) | 572 | **572** | — |
-| checkpoints 344,395,000–004 | 127 | **127** | — |
-| checkpoints 335,000,000–004 (a month earlier) | 42 | **42** | — |
-| checkpoints 150,000,000–009 (May 2025) | 61 | **61** | — |
+| checkpoints [344,393,000](https://suiscan.xyz/mainnet/checkpoint/344393000)–[019](https://suiscan.xyz/mainnet/checkpoint/344393019) (20 consecutive, ~5 s of Sui) | 572 | **572** | — |
+| checkpoints [344,395,000](https://suiscan.xyz/mainnet/checkpoint/344395000)–[004](https://suiscan.xyz/mainnet/checkpoint/344395004) | 127 | **127** | — |
+| checkpoints [335,000,000](https://suiscan.xyz/mainnet/checkpoint/335000000)–[004](https://suiscan.xyz/mainnet/checkpoint/335000004) (a month earlier) | 42 | **42** | — |
+| checkpoints [150,000,000](https://suiscan.xyz/mainnet/checkpoint/150000000)–[009](https://suiscan.xyz/mainnet/checkpoint/150000009) (May 2025) | 61 | **61** | — |
 | 200 random recent transactions | 200 | 199 (the other one fixed since) | — |
 
 `scripts/replay-sample.py --checkpoint A-B` (8 in parallel: 572 transactions in 2 min 48 s, ~510k
 cycles each on average). Transactions that failed on chain count as byte-identical when the
 replay fails with the same abort code in the same module.
 
+**Transactions worth a look** (each replays with `target/release/sui-replay <digest>`):
+
+* [`GpL3CbLNzdNjq7MPeyJfhrMeEhmBzdQaYUxpjjmnUQpz`](https://suiscan.xyz/mainnet/tx/GpL3CbLNzdNjq7MPeyJfhrMeEhmBzdQaYUxpjjmnUQpz) — failed on chain (abort 47 in `clearing_house`); the replay fails identically
+* [`H5Zxu6H8GSswPDUDFEYWMcikQbZQG3PTyLeQMRt2gtJL`](https://suiscan.xyz/mainnet/tx/H5Zxu6H8GSswPDUDFEYWMcikQbZQG3PTyLeQMRt2gtJL) — a coin reservation: USDC drawn from the address balance as a coin input
+* [`2i8CLWTLXyaLX8BY626VjhpgPYWHGA7NyD3NRPqN7FR9`](https://suiscan.xyz/mainnet/tx/2i8CLWTLXyaLX8BY626VjhpgPYWHGA7NyD3NRPqN7FR9) — BLS12-381: aggregates public keys (`group_ops`) and verifies a min-pk signature, 5.3M cycles
+* [`9DznnpWWjvuQPEAwP4uCBZMMAksCwY3YqbUkaohkh7bT`](https://suiscan.xyz/mainnet/tx/9DznnpWWjvuQPEAwP4uCBZMMAksCwY3YqbUkaohkh7bT) — BLS12-381 min-sig signature check, May 2025
+* [`D46QLmVyfRNEDFsySE8HVAHBFezYD9CD7p6Z5s6g6xMz`](https://suiscan.xyz/mainnet/tx/D46QLmVyfRNEDFsySE8HVAHBFezYD9CD7p6Z5s6g6xMz) — sponsored: the gas coin belongs to someone else and is passed to Move
+* [`8jJPwkFrk4H8dP1CvT2fWuuA6M2KCFVhhAjsnkYSevRR`](https://suiscan.xyz/mainnet/tx/8jJPwkFrk4H8dP1CvT2fWuuA6M2KCFVhhAjsnkYSevRR) — a gas station contract reading `tx_context::sponsor()`
+* [`6nbjaQVzRszuX3drRBym3pWWZL4o2MwbC5nFo4SnSA3X`](https://suiscan.xyz/mainnet/tx/6nbjaQVzRszuX3drRBym3pWWZL4o2MwbC5nFo4SnSA3X) — 210 written objects and events, all compared
+* [`CcTWoDwsfRWG8zzGXxgjL9R9YBbYTcyhEES67EhcKg5J`](https://suiscan.xyz/mainnet/tx/CcTWoDwsfRWG8zzGXxgjL9R9YBbYTcyhEES67EhcKg5J) — calls DeepBook v2 code (an old package version) — the case that exposed the GraphQL version quirk
+* [`HPNM9z6cMd9qKMTfMXddAGQK4m8tdMKj3Z244Eg3wCHB`](https://suiscan.xyz/mainnet/tx/HPNM9z6cMd9qKMTfMXddAGQK4m8tdMKj3Z244Eg3wCHB) — gas from the address balance; the gas coin takes the first new object ID
+
 **Proving on a laptop** (`scripts/bench-replay.sh`: replay, check against chain, then prove and
 verify exactly that run; SP1 6.10 CPU prover, Apple M1 Max, 10 cores, no GPU):
 
 | transaction | PTB | cycles | prove | verify | proof |
 |---|---|---|---|---|---|
-| DeepBook v3 market order (`AjzaKV…`) | 2 Move calls | 596k | 26.2 s | 85 ms | 2.7 MiB |
-| DeFi route (`4R9QDP…`) | 26 calls, 2 splits, 2 merges, balance withdrawal | 576k | 27.2 s | 85 ms | 2.7 MiB |
-| lending repay (`Haf4Th…`) | 2 calls, 2 splits, 2 merges, gas reservation | 863k | 30.2 s | 85 ms | 2.7 MiB |
-| 17 Move calls (`8zj6P6…`) | 17 calls | 1.61M | 37.8 s | 86 ms | 2.7 MiB |
-| ed25519 signature checks (`8sc3Gw…`) | 13 calls | 2.64M | 82.8 s | 322 ms | 9.8 MiB |
+| DeepBook v3 market order ([`AjzaKV…`](https://suiscan.xyz/mainnet/tx/AjzaKVKPjr49AZk68PpKJzo3D7spa753oMgnrA8DPGdq)) | 2 Move calls | 596k | 26.2 s | 85 ms | 2.7 MiB |
+| DeFi route ([`4R9QDP…`](https://suiscan.xyz/mainnet/tx/4R9QDP1EfXCYTD6MN15i1nU2absKgiDjdYDGkf3zbbTC)) | 26 calls, 2 splits, 2 merges, balance withdrawal | 576k | 27.2 s | 85 ms | 2.7 MiB |
+| lending repay ([`Haf4Th…`](https://suiscan.xyz/mainnet/tx/Haf4Thpbobnau4HLv2UXNSbch9Q295rRGioJY8WbhxmA)) | 2 calls, 2 splits, 2 merges, gas reservation | 863k | 30.2 s | 85 ms | 2.7 MiB |
+| 17 Move calls ([`8zj6P6…`](https://suiscan.xyz/mainnet/tx/8zj6P6w13Z2SbLn2epw1sF2sRUeqn2zDn43fz7hTpztt)) | 17 calls | 1.61M | 37.8 s | 86 ms | 2.7 MiB |
+| ed25519 signature checks ([`8sc3Gw…`](https://suiscan.xyz/mainnet/tx/8sc3GwqkF1PpBSTRbS5WccfG1FMo18YVJC3q6LFpDSkt)) | 13 calls | 2.64M | 82.8 s | 322 ms | 9.8 MiB |
 | DeepBook market order, compressed proof | 2 Move calls | 596k | 60.8 s | 36 ms | 1.2 MiB |
 
 Core proofs unless noted; a compressed proof is SP1's constant-size recursive proof. A trivial
@@ -113,7 +127,7 @@ program takes ~22 s, so for typical transactions most of the time is the prover'
 Execution alone takes 15–100 ms per transaction.
 
 **One proof per batch** (`scripts/prove-checkpoint.sh A-B`; same laptop): every user transaction
-of mainnet checkpoints 150,000,003–006 — 12 transactions, 11.0M cycles in total — replayed
+of mainnet checkpoints [150,000,003](https://suiscan.xyz/mainnet/checkpoint/150000003)–[006](https://suiscan.xyz/mainnet/checkpoint/150000006) — 12 transactions, 11.0M cycles in total — replayed
 (byte-identical), each proven with a compressed proof (76–206 s each), then all 12 verified
 inside SP1 by the aggregation program in **294 s**. The result is a single **1.2 MiB proof that
 verifies in 38 ms**, committing to each transaction's program and public values (input state
