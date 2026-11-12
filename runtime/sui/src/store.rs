@@ -491,3 +491,50 @@ pub(crate) fn take_object(id: &Address, d: &TypeDesc) -> *mut u8 {
     }
     obj.data
 }
+
+/// `config::read_setting_impl<Field<Name, Setting<V>>, Setting<V>, SettingData<V>, V>(config,
+/// name, current_epoch)`: the setting's value as of this epoch (`Option<V>`, written to `out`
+/// of type `out_d`), as Sui's native computes it — none if the field does not exist, else the
+/// newer value once its epoch has passed, the older one before.
+///
+/// # Safety
+/// `out` is valid for writes of a value of type `out_d`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn move_rt_sui_read_setting(
+    field_d: &TypeDesc,
+    config: &Address,
+    name: &Address,
+    current_epoch: u64,
+    out_d: &TypeDesc,
+    out: *mut u8,
+) {
+    let mut bcs_out: Vec<u8> = alloc::vec![0]; // none
+    if move_rt_sui_df_has(config, name, field_d) {
+        // SAFETY: the stored child is an initialized `Field<Name, Setting<V>>`.
+        let field = unsafe { Value::new(field_d, find(config, name, field_d)) };
+        // Field { id, name, value: Setting { data: Option<SettingData> } }
+        let setting = field.fields().nth(2).map(|(_, v)| v);
+        let data = setting.and_then(|s| s.fields().next().map(|(_, v)| v));
+        let first = data.and_then(|o| o.fields().next().and_then(|(_, v)| v.elems().next()));
+        if let Some(sd) = first {
+            let mut f = sd.fields().map(|(_, v)| v);
+            let (epoch, newer, older) = (f.next(), f.next(), f.next());
+            let epoch = epoch.map(|e| u64::from_le_bytes(e.prim_bytes().try_into().unwrap()));
+            let chosen = if epoch.is_some_and(|e| current_epoch > e) {
+                newer
+            } else {
+                older
+            };
+            if let Some(v) = chosen {
+                bcs_out.clear();
+                bcs::encode(v, &mut bcs_out);
+            }
+        }
+    }
+    // a copy (decoded afresh), not an alias of the stored setting
+    // SAFETY: guaranteed by the caller.
+    let slot = unsafe { Slot::new(out_d, out) };
+    if bcs::decode(slot, &mut bcs_out.as_slice()).is_err() {
+        abort_in(DYNAMIC_FIELD, E_FIELD_TYPE_MISMATCH);
+    }
+}

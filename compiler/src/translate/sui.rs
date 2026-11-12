@@ -317,6 +317,29 @@ impl<'ctx> Translator<'ctx, '_> {
                 ];
                 self.call_runtime("move_rt_sui_accumulator_event", None, &args)?;
             }
+            "config::read_setting_impl" => {
+                // <Field<Name, Setting<V>>, Setting<V>, SettingData<V>, V>(config, name, epoch)
+                self.note_state_type(&t(0));
+                let (epoch, _) = fr.pop()?;
+                let (name_id, _) = fr.pop()?;
+                let (config, _) = fr.pop()?;
+                let opt = Type::parse(
+                    self.prog,
+                    &format!("0x1::option::Option<{}>", t(3).canonical(self.prog)),
+                )?;
+                let lty = self.llvm_type(&opt)?;
+                let out = self.builder.build_alloca(lty, "setting")?;
+                let args = [
+                    self.type_desc(&t(0))?.into(),
+                    self.spill(config)?.into(),
+                    self.spill(name_id)?.into(),
+                    epoch.into(),
+                    self.type_desc(&opt)?.into(),
+                    out.into(),
+                ];
+                self.call_runtime("move_rt_sui_read_setting", None, &args)?;
+                fr.push(self.builder.build_load(lty, out, "")?, opt);
+            }
             "funds_accumulator::reserve_object_funds_for_withdrawal" => {
                 // object balances are not modelled: the reservation is not checked
                 fr.pop()?; // limit
