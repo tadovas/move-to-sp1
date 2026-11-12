@@ -322,3 +322,104 @@ pub extern "C" fn move_rt_sui_end_transaction() {
         inv.taken.clear();
     });
 }
+
+// ---- state snapshots (see `state.rs`)
+
+/// Where a persistent object lives.
+#[derive(Clone, Copy)]
+pub(crate) enum Placement {
+    /// Owned by an account.
+    Owned(Address),
+    Shared,
+    /// A dynamic-field child of this parent.
+    Child(Address),
+}
+
+/// Visit every persistent object: placement, ID, type and value.
+pub(crate) fn for_each_stored(
+    mut f: impl FnMut(Placement, &Address, &'static TypeDesc, *const u8),
+) {
+    // SAFETY (both loops): stored descriptors point at the program's constant descriptors.
+    INVENTORY.with(|inv| {
+        for (id, o) in &inv.objects {
+            let placement = o.owner.map_or(Placement::Shared, Placement::Owned);
+            f(placement, id, unsafe { &*o.desc }, o.data);
+        }
+    });
+    STORE.with(|s| {
+        for (id, c) in s {
+            f(Placement::Child(c.parent), id, unsafe { &*c.desc }, c.data);
+        }
+    });
+}
+
+/// Insert an object loaded from an input snapshot (`data` holds a value of type `d`).
+pub(crate) fn insert_stored(
+    placement: Placement,
+    id: Address,
+    d: &'static TypeDesc,
+    data: *mut u8,
+) {
+    match placement {
+        Placement::Child(parent) => STORE.with(|s| {
+            s.insert(
+                id,
+                Child {
+                    parent,
+                    desc: d,
+                    data,
+                },
+            );
+        }),
+        Placement::Owned(_) | Placement::Shared => INVENTORY.with(|inv| {
+            let owner = match placement {
+                Placement::Owned(a) => Some(a),
+                _ => None,
+            };
+            let seq = inv.next_seq;
+            inv.next_seq += 1;
+            inv.objects.insert(
+                id,
+                Owned {
+                    owner,
+                    desc: d,
+                    data,
+                    seq,
+                    pending: false,
+                },
+            );
+        }),
+    }
+}
+
+/// Owners of the owned objects lent to the entry function (checked against the sender).
+static LENT_OWNED: Global<Vec<Address>> = Global::new(Vec::new());
+
+/// An object of the input state, lent to an entry function's `&T` / `&mut T` parameter:
+/// mutations happen in place, so they persist into the output state.
+#[unsafe(no_mangle)]
+pub extern "C" fn move_rt_sui_borrow_object(id: &Address, d: &TypeDesc) -> *mut u8 {
+    let found = INVENTORY.with(|inv| {
+        inv.objects
+            .get(id)
+            .filter(|o| ptr::eq(o.desc, d))
+            .map(|o| (o.data, o.owner))
+    });
+    let Some((data, owner)) = found else {
+        abort_in(crate::location::STATE, crate::state::E_OBJECT_NOT_IN_STATE)
+    };
+    if let Some(owner) = owner {
+        LENT_OWNED.with(|l| l.push(owner));
+    }
+    data
+}
+
+/// Called by the entry glue once all arguments are read: as on Sui, owned objects can only
+/// be used by their owner (shared objects by anyone).
+#[unsafe(no_mangle)]
+pub extern "C" fn move_rt_sui_check_inputs() {
+    let sender = crate::tx::sender();
+    if LENT_OWNED.with(|l| l.iter().any(|owner| *owner != sender)) {
+        abort_in(crate::location::STATE, crate::state::E_NOT_OWNER);
+    }
+}

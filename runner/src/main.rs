@@ -13,6 +13,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use clap::{Parser, Subcommand};
 use serde_json::Value;
+use sha2::Digest;
 use sp1_sdk::{Elf, LightProver, ProverClient, SP1Stdin, prelude::*};
 
 use abi::Abi;
@@ -35,6 +36,12 @@ enum Cmd {
         /// Print results as single-line JSON.
         #[arg(long)]
         compact: bool,
+        /// Input state snapshot (objects from earlier runs); default: empty.
+        #[arg(long)]
+        state_in: Option<PathBuf>,
+        /// Write the output state snapshot here (input for the next run).
+        #[arg(long)]
+        state_out: Option<PathBuf>,
     },
     /// Print the program's entry signature.
     Info { elf: PathBuf },
@@ -57,7 +64,13 @@ async fn main() -> Result<()> {
                 println!("effects may include:\n  {}", abi.effects.join("\n  "));
             }
         }
-        Cmd::Run { elf, args, compact } => run(elf, args, compact).await?,
+        Cmd::Run {
+            elf,
+            args,
+            compact,
+            state_in,
+            state_out,
+        } => run(elf, args, compact, state_in, state_out).await?,
         Cmd::Test { dir } => test(dir).await?,
     }
     Ok(())
@@ -143,7 +156,13 @@ async fn execute_tracked(
     Ok((outcome, report.total_instruction_count(), fidelity))
 }
 
-async fn run(elf: PathBuf, args: Vec<String>, compact: bool) -> Result<()> {
+async fn run(
+    elf: PathBuf,
+    args: Vec<String>,
+    compact: bool,
+    state_in: Option<PathBuf>,
+    state_out: Option<PathBuf>,
+) -> Result<()> {
     let bytes = std::fs::read(&elf).with_context(|| format!("reading {}", elf.display()))?;
     let abi = Abi::from_elf(&bytes)?;
     ensure!(
@@ -156,8 +175,33 @@ async fn run(elf: PathBuf, args: Vec<String>, compact: bool) -> Result<()> {
     );
 
     let mut stdin = SP1Stdin::new();
+    // the input state comes first (see runtime/sui/src/state.rs)
+    let snapshot_in = match &state_in {
+        Some(p) => std::fs::read(p).with_context(|| format!("reading {}", p.display()))?,
+        None => vec![],
+    };
+    let in_hash: [u8; 32] = sha2::Sha256::digest(&snapshot_in).into();
+    let state_objects = abi.state_objects(&snapshot_in)?;
+    stdin.write_vec(snapshot_in);
     for (ty, a) in abi.params.iter().zip(&args) {
-        let v: Value = serde_json::from_str(a).unwrap_or_else(|_| Value::String(a.clone()));
+        // object references: `&Clock` is the clock singleton (no input), `&TxContext` is
+        // given as JSON, any other `&T` is the ID of an object in the input state
+        let (ty, a) = match ty.strip_prefix('&') {
+            Some("clock::Clock") => continue,
+            Some(inner) if inner == "tx_context::TxContext" => (inner, a.clone()),
+            // `_`: the one object of this type in the input state
+            Some(inner) if a == "_" => {
+                let found: Vec<_> = state_objects.iter().filter(|(_, t)| t == inner).collect();
+                match found.as_slice() {
+                    [(id, _)] => ("address", id.clone()),
+                    [] => bail!("no object of type {inner} in the input state"),
+                    _ => bail!("several objects of type {inner} in the input state: give its ID"),
+                }
+            }
+            Some(_) => ("address", a.clone()),
+            None => (ty.as_str(), a.clone()),
+        };
+        let v: Value = serde_json::from_str(&a).unwrap_or_else(|_| Value::String(a.clone()));
         let mut buf = vec![];
         abi.encode(ty, &v, &mut buf)
             .with_context(|| format!("argument {a} ({ty})"))?;
@@ -211,6 +255,27 @@ async fn run(elf: PathBuf, args: Vec<String>, compact: bool) -> Result<()> {
                 effects.pretty()
             };
             println!("effects: {text}");
+        }
+    }
+    if !out.is_empty() {
+        // state: sha256(input snapshot) || len || output snapshot
+        let committed_in: [u8; 32] = out.get(..32).context("missing state")?.try_into()?;
+        out = &out[32..];
+        ensure!(
+            committed_in == in_hash,
+            "program committed a different input state hash"
+        );
+        let snapshot = abi::read_bytes(&mut out)?;
+        let out_hash: [u8; 32] = sha2::Sha256::digest(snapshot).into();
+        let summary = abi.summarize_state(snapshot)?;
+        println!(
+            "state: in {} -> out {}  {summary}",
+            short_hex(&in_hash),
+            short_hex(&out_hash)
+        );
+        if let Some(p) = &state_out {
+            std::fs::write(p, snapshot)?;
+            println!("  output state written to {}", p.display());
         }
     }
     println!("cycles: {cycles}  (executed in {elapsed:.2?})");
@@ -269,7 +334,9 @@ async fn test(dir: PathBuf) -> Result<()> {
             continue;
         };
         let bytes = std::fs::read(dir.join(elf))?;
-        let (outcome, cycles) = execute(&client, &bytes, SP1Stdin::new()).await?;
+        let mut stdin = SP1Stdin::new();
+        stdin.write_vec(vec![]); // empty input state
+        let (outcome, cycles) = execute(&client, &bytes, stdin).await?;
         total_cycles += cycles;
         let (ok, got) = match &outcome {
             Outcome::Success(_) => (expected == "success", "success".to_string()),
@@ -304,4 +371,12 @@ async fn test(dir: PathBuf) -> Result<()> {
 /// An expected abort location (canonical module id) matches, or none was expected.
 fn location_ok(expected: &Value, actual: &str) -> bool {
     expected.as_str().is_none_or(|want| want == actual)
+}
+
+fn short_hex(b: &[u8]) -> String {
+    b[..6]
+        .iter()
+        .map(|x| format!("{x:02x}"))
+        .collect::<String>()
+        + "…"
 }

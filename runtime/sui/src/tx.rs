@@ -59,6 +59,11 @@ pub unsafe extern "C" fn move_rt_sui_tx_init(d: &TypeDesc, p: *const u8) {
     });
 }
 
+/// The transaction sender.
+pub(crate) fn sender() -> Address {
+    TX.with(|tx| tx.sender)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn move_rt_sui_sender(out: &mut Address) {
     *out = TX.with(|tx| tx.sender);

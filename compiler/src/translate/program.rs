@@ -140,6 +140,40 @@ impl<'a> Program<'a> {
         })
     }
 
+    /// The `init` functions of all non-framework modules (not at 0x1 / 0x2), in dependency
+    /// order: a module is initialized after the modules it uses.
+    pub fn init_functions(&self) -> Vec<FnId> {
+        let framework = |m: ModuleIdx| {
+            let a = self.modules[m].address();
+            *a == AccountAddress::ONE || *a == AccountAddress::TWO
+        };
+        fn visit(p: &Program, m: ModuleIdx, seen: &mut Vec<bool>, order: &mut Vec<ModuleIdx>) {
+            if std::mem::replace(&mut seen[m], true) {
+                return;
+            }
+            let cm = p.modules[m];
+            for h in cm.module_handles() {
+                let (addr, name) = (
+                    cm.address_identifier_at(h.address),
+                    cm.identifier_at(h.name),
+                );
+                if let Some(dep) = p.find_module(addr, name) {
+                    visit(p, dep, seen, order);
+                }
+            }
+            order.push(m);
+        }
+        let (mut seen, mut order) = (vec![false; self.modules.len()], vec![]);
+        for m in 0..self.modules.len() {
+            visit(self, m, &mut seen, &mut order);
+        }
+        order
+            .into_iter()
+            .filter(|&m| !framework(m))
+            .filter_map(|m| self.find_function(m, IdentStr::new("init").unwrap()))
+            .collect()
+    }
+
     pub fn is_native(&self, f: FnId) -> bool {
         self.modules[f.module].function_def_at(f.def).code.is_none()
     }

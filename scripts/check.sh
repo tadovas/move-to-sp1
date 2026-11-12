@@ -79,5 +79,12 @@ deepbook-v2-demo|run|{"id":"0xc01","balance":100000000000} {"id":"0x6","timestam
 deepbook-v3-demo|run|1700000000000|{"taker_base_bought":4000000,"taker_quote_paid":4020000,"best_bid":990000000,"best_ask":1010000000,"mid_price":1000000000,"maker_base":0,"maker_quote":2120000,"taker_base":4000000,"taker_quote":5980000}|--test-mode
 CASES
 
+# chained runs through state snapshots
+if scripts/chain-demo.sh > /tmp/chain.log 2>&1; then
+  echo "ok   chain-demo (publish -> create_pool -> make -> take)"; pass=$((pass+1))
+else
+  echo "FAIL chain-demo"; sed 's/^/    /' /tmp/chain.log | tail -5; fail=$((fail+1))
+fi
+
 echo "$pass passed, $fail failed"
 (( fail == 0 ))

@@ -1935,6 +1935,7 @@ dependencies = [
  "num-bigint 0.4.8",
  "object 0.37.3",
  "serde_json",
+ "sha2",
  "sp1-sdk",
  "tokio",
 ]

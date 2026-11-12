@@ -96,6 +96,9 @@ pub struct Translator<'ctx, 'p> {
     missing_natives: BTreeSet<String>,
     /// Types of values recorded as effects (events, transferred objects), for the ABI.
     effect_types: Vec<Type>,
+    /// Types that can be stored in the state (objects, dynamic-field children): the type
+    /// registry the runtime uses to rebuild objects from an input snapshot.
+    state_types: Vec<Type>,
     /// LLVM struct types for instantiated Move structs (memoized by `llvm_type`).
     struct_types: RefCell<HashMap<Type, StructType<'ctx>>>,
     /// Target layout (sizes/alignments for enum payloads).
@@ -121,6 +124,7 @@ impl<'ctx, 'p> Translator<'ctx, 'p> {
             queue: VecDeque::new(),
             missing_natives: BTreeSet::new(),
             effect_types: Vec::new(),
+            state_types: Vec::new(),
             struct_types: RefCell::default(),
             target_data,
             options,
@@ -135,6 +139,37 @@ impl<'ctx, 'p> Translator<'ctx, 'p> {
             type_args: vec![],
         };
         let target = self.function(&inst)?;
+        self.drain()?;
+        self.entry_glue(entry, target)
+    }
+
+    /// Translate a package publish: every `init` in `inits` (dependency order) is called with
+    /// the transaction context and, where it takes one, its one-time witness.
+    pub fn compile_publish(&mut self, inits: &[FnId]) -> Result<EntryAbi> {
+        let mut fns = vec![];
+        for id in inits {
+            fns.push((
+                *id,
+                self.function(&FnInst {
+                    id: *id,
+                    type_args: vec![],
+                })?,
+            ));
+        }
+        self.drain()?;
+        let tx_context = self
+            .prog
+            .struct_by_name(
+                &move_core_types::account_address::AccountAddress::TWO,
+                "tx_context",
+                "TxContext",
+            )
+            .ok_or_else(|| anyhow!("sui::tx_context not loaded"))?;
+        self.publish_glue(&fns, &Type::Struct(tx_context, vec![]))
+    }
+
+    /// Translate every queued function; report unsupported natives all at once.
+    fn drain(&mut self) -> Result<()> {
         while let Some(inst) = self.queue.pop_front() {
             self.translate_function(&inst)
                 .map_err(|e| anyhow!("in {}: {e:#}", self.instance_name(&inst)))?;
@@ -146,7 +181,14 @@ impl<'ctx, 'p> Translator<'ctx, 'p> {
                 list.join("\n  ")
             );
         }
-        self.entry_glue(entry, target)
+        Ok(())
+    }
+
+    /// Remember that values of `ty` can be stored in the state (see `state_types`).
+    fn note_state_type(&mut self, ty: &Type) {
+        if !self.state_types.contains(ty) {
+            self.state_types.push(ty.clone());
+        }
     }
 
     pub fn module(&self) -> &Module<'ctx> {

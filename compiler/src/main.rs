@@ -62,6 +62,10 @@ enum Cmd {
         /// Include `#[test_only]` code (test helpers, `sui::test_scenario`).
         #[arg(long)]
         test_mode: bool,
+        /// Build a *publish* program instead of an entry function: it runs every module's
+        /// `init` (dependencies first) and outputs the created objects as state.
+        #[arg(long, conflicts_with = "entry")]
+        publish: bool,
         /// Also write the generated LLVM IR (before optimization) to this path.
         #[arg(long)]
         emit_llvm: Option<PathBuf>,
@@ -103,10 +107,16 @@ fn main() -> Result<()> {
             entry,
             output,
             test_mode,
+            publish,
             emit_llvm,
         } => {
             let compiled = load(&input, test_mode)?;
-            let (elf, abi) = build_elf(&compiled, &entry, &input, emit_llvm.as_deref())?;
+            let what = if publish {
+                Entry::Publish
+            } else {
+                Entry::Function(&entry)
+            };
+            let (elf, abi) = build_elf(&compiled, what, &input, emit_llvm.as_deref())?;
             std::fs::write(&output, &elf)?;
             eprintln!(
                 "{} -> {} ({} bytes, entry {}({}) -> ({}))",
@@ -150,17 +160,25 @@ fn load(input: &Input, test_mode: bool) -> Result<Compiled> {
     frontend::compile(&packages, &addresses, test_mode)
 }
 
+/// What a program runs.
+#[derive(Clone, Copy)]
+enum Entry<'a> {
+    /// A Move function: `module::function` or `function`.
+    Function(&'a str),
+    /// Every module's `init` (package publish).
+    Publish,
+}
+
 /// Translate, optimize and link one entry point into an SP1 ELF.
 fn build_elf(
     compiled: &Compiled,
-    entry: &str,
+    entry: Entry,
     input: &Input,
     emit_llvm: Option<&Path>,
 ) -> Result<(Vec<u8>, translate::EntryAbi)> {
     let modules: Vec<_> = compiled.targets.iter().chain(&compiled.deps).collect();
     let prog = translate::Program::new(modules);
     let candidates: Vec<usize> = (0..compiled.targets.len()).collect();
-    let entry = prog.lookup_entry(entry, &candidates)?;
 
     // bytecode -> LLVM IR
     let ctx = Context::create();
@@ -171,7 +189,10 @@ fn build_elf(
         tm.get_target_data(),
         translate::Options { fast: input.fast },
     );
-    let abi = translator.compile(entry)?;
+    let abi = match entry {
+        Entry::Function(name) => translator.compile(prog.lookup_entry(name, &candidates)?)?,
+        Entry::Publish => translator.compile_publish(&prog.init_functions())?,
+    };
     if let Some(p) = emit_llvm {
         target::prepare(translator.module(), &tm);
         translator
@@ -224,7 +245,7 @@ fn test(input: &Input, out: &Path, filter: Option<&str>) -> Result<()> {
             }
         };
         let elf_name = format!("{}.elf", t.name.replace("::", "__"));
-        match build_elf(&compiled, &t.name, input, None) {
+        match build_elf(&compiled, Entry::Function(&t.name), input, None) {
             Ok((elf, _)) => {
                 std::fs::write(out.join(&elf_name), elf)?;
                 manifest.push(json!({ "name": t.name, "elf": elf_name, "expected": expected }));

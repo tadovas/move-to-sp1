@@ -24,6 +24,8 @@ pub struct Abi {
     pub effects: Vec<String>,
     /// Fidelity points compiled in their fast (`--fast`) variant; the rest are exact.
     pub fast: Vec<String>,
+    /// Types that can be stored in the state: canonical name -> display name.
+    state_names: HashMap<String, String>,
     types: HashMap<String, TypeDef>,
 }
 
@@ -84,6 +86,12 @@ impl Abi {
             returns: strings(&j["returns"]),
             effects: strings(&j["effects"]),
             fast: strings(&j["fast"]),
+            state_names: j["state"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("?").to_string()))
+                .collect(),
             types,
         })
     }
@@ -252,7 +260,69 @@ impl Abi {
     }
 }
 
+/// A ULEB128-length-prefixed byte string.
+pub fn read_bytes<'a>(input: &mut &'a [u8]) -> Result<&'a [u8]> {
+    let n = read_uleb128(input)? as usize;
+    take(input, n)
+}
+
 impl Abi {
+    /// Objects in a state snapshot: (ID as 0x-hex, display type name).
+    pub fn state_objects(&self, snapshot: &[u8]) -> Result<Vec<(String, String)>> {
+        let mut input = snapshot;
+        let n = if input.is_empty() {
+            0
+        } else {
+            read_uleb128(&mut input)?
+        };
+        let mut objects = vec![];
+        for _ in 0..n {
+            take(&mut input, 1)?; // kind
+            let id = hex(take(&mut input, 32)?);
+            take(&mut input, 32)?; // owner/parent
+            let name = String::from_utf8(read_bytes(&mut input)?.to_vec())?;
+            read_bytes(&mut input)?; // value
+            objects.push((
+                id,
+                self.state_names
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_else(|| short_type_name(&name)),
+            ));
+        }
+        Ok(objects)
+    }
+
+    /// One-line summary of a state snapshot: object count by kind and type.
+    pub fn summarize_state(&self, snapshot: &[u8]) -> Result<String> {
+        let mut input = snapshot;
+        let n = if input.is_empty() {
+            0
+        } else {
+            read_uleb128(&mut input)?
+        };
+        let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+        for _ in 0..n {
+            let kind = ["owned", "shared", "field"]
+                .get(take(&mut input, 1)?[0] as usize)
+                .unwrap_or(&"?");
+            take(&mut input, 64)?; // id, owner/parent
+            let name = String::from_utf8(read_bytes(&mut input)?.to_vec())?;
+            read_bytes(&mut input)?; // value
+            let short = self
+                .state_names
+                .get(&name)
+                .cloned()
+                .unwrap_or_else(|| short_type_name(&name));
+            *counts.entry(format!("{kind} {short}")).or_default() += 1;
+        }
+        let list: Vec<String> = counts
+            .into_iter()
+            .map(|(k, v)| format!("{v}× {k}"))
+            .collect();
+        Ok(format!("({n} objects: {})", list.join(", ")))
+    }
+
     /// Decode the effects committed after the results (see `runtime/sui/src/effects.rs`):
     /// `vector<(tag, type name, [recipient], bcs value)>`.
     pub fn decode_effects(&self, input: &mut &[u8]) -> Result<Out> {
@@ -290,6 +360,27 @@ impl Abi {
 }
 
 const OPTION: &str = "option::Option<";
+
+/// `0000…0002::coin::Coin<0000…0100::base::BASE>` -> `coin::Coin<base::BASE>`, matching the
+/// compiler's display names (for types this program does not know).
+fn short_type_name(canonical: &str) -> String {
+    let mut out = String::new();
+    for part in canonical.split_inclusive(['<', ',', '>']) {
+        let part = match part.split_once("::") {
+            Some((addr, rest))
+                if addr.len() == 64 && addr.bytes().all(|c| c.is_ascii_hexdigit()) =>
+            {
+                rest
+            }
+            _ => part,
+        };
+        out.push_str(part);
+        if part.ends_with(',') {
+            out.push(' ');
+        }
+    }
+    out
+}
 
 fn int_width(ty: &str) -> Option<usize> {
     Some(match ty {

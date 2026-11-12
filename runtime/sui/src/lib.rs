@@ -8,6 +8,7 @@
 //!               shared objects (taken and returned with `sui::test_scenario`)
 //! * `clock`   — the `Clock` singleton
 //! * `hash`    — Sui's hashing (Blake2b-256 IDs) and `sui::hash` natives
+//! * `state`   — state snapshots: persistent objects in from / out to other runs
 //! * `effects` — events, transfers, shares and freezes, committed after the results
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -20,6 +21,7 @@ pub use move_rt_core;
 mod clock;
 mod effects;
 mod hash;
+mod state;
 mod store;
 mod tx;
 
@@ -32,4 +34,6 @@ pub(crate) mod location {
         "0000000000000000000000000000000000000000000000000000000000000002::dynamic_field";
     pub const TEST_SCENARIO: &str =
         "0000000000000000000000000000000000000000000000000000000000000002::test_scenario";
+    /// Not a Move module: failures of the runtime's state handling.
+    pub const STATE: &str = "move2sp1::state";
 }

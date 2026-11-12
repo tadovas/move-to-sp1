@@ -10,6 +10,7 @@ anyhow = "1"
 object = { version = "0.37", default-features = false, features = ["read", "elf", "std"] }
 num-bigint = "0.4"
 serde_json = "1"
+sha2 = "0.10"
 clap = { version = "4", features = ["derive"] }
 # `profiling`: the executor honours cycle-tracker markers (fidelity point accounting)
 sp1-sdk = { version = "6.10.0", features = ["profiling"] }

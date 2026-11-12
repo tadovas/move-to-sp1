@@ -78,7 +78,8 @@ pub unsafe extern "C" fn move_rt_sui_freeze(d: &TypeDesc, p: *const u8) {
     record(FREEZE, unsafe { Value::new(d, p) }, None);
 }
 
-/// Platform hook called by the entry glue after the results: commit the effects.
+/// Platform hook called by the entry glue after the results: commit the effects, then the
+/// state (`state.rs`).
 #[unsafe(no_mangle)]
 pub extern "C" fn move_rt_finish() {
     let mut out = Vec::new();
@@ -87,4 +88,5 @@ pub extern "C" fn move_rt_finish() {
         out.extend_from_slice(log);
     });
     sp1_zkvm::io::commit_slice(&out);
+    crate::state::commit();
 }

@@ -99,6 +99,7 @@ impl<'ctx> Translator<'ctx, '_> {
                 fr.push(id, Type::Address);
             }
             "dynamic_field::add_child_object" => {
+                self.note_state_type(&t(0));
                 let (child, _) = fr.pop()?;
                 let (parent, _) = fr.pop()?;
                 let args = [
@@ -109,6 +110,7 @@ impl<'ctx> Translator<'ctx, '_> {
                 self.call_runtime("move_rt_sui_df_add", None, &args)?;
             }
             "dynamic_field::borrow_child_object" | "dynamic_field::borrow_child_object_mut" => {
+                self.note_state_type(&t(0));
                 let (id, _) = fr.pop()?;
                 let (parent_uid, _) = fr.pop()?; // &UID: points at the parent's address
                 let args = [
@@ -124,6 +126,7 @@ impl<'ctx> Translator<'ctx, '_> {
                 fr.push(child.unwrap(), Type::Ref(Box::new(t(0))));
             }
             "dynamic_field::remove_child_object" => {
+                self.note_state_type(&t(0));
                 let (id, _) = fr.pop()?;
                 let (parent, _) = fr.pop()?;
                 let lty = self.llvm_type(&t(0))?;
@@ -201,6 +204,7 @@ impl<'ctx> Translator<'ctx, '_> {
             // ---- test_scenario: shared objects across transactions
             // `owner` below: null for shared objects, else a pointer to the account address
             "test_scenario::take_shared_by_id" | "test_scenario::take_from_address_by_id" => {
+                self.note_state_type(&t(0));
                 let (id, _) = fr.pop()?;
                 let owner = if name.ends_with("shared_by_id") {
                     self.ptr_type().const_null()
@@ -400,6 +404,9 @@ impl<'ctx> Translator<'ctx, '_> {
         self.call_runtime(rt, None, &args)?;
         if !self.effect_types.contains(ty) {
             self.effect_types.push(ty.clone());
+        }
+        if rt != "move_rt_sui_emit" && rt != "move_rt_sui_freeze" {
+            self.note_state_type(ty); // transferred / shared objects persist in the state
         }
         Ok(())
     }
