@@ -69,6 +69,7 @@ async fn main() -> Result<()> {
     );
     let chain_error = (fx["status"]["success"] != true).then(|| &fx["status"]["error"]);
     let lamport = num(&effects["lamportVersion"]).context("lamportVersion")?;
+    let checkpoint = num(&effects["checkpoint"]["sequenceNumber"]).context("checkpoint")?;
     println!(
         "tx {} (checkpoint {}, {}), sender {}",
         cli.digest,
@@ -189,7 +190,7 @@ async fn main() -> Result<()> {
 
     // packages and the image
     let t = std::time::Instant::now();
-    let packages = Packages::fetch(&mut chain, &calls, &extra_types).await?;
+    let packages = Packages::fetch(&mut chain, checkpoint, &calls, &extra_types).await?;
     let specs: Vec<String> = calls
         .iter()
         .map(|(pkg, module, function, targs)| {
@@ -317,7 +318,7 @@ async fn main() -> Result<()> {
     std::fs::write(dir.join("state_out.bin"), &output.state_out)?;
 
     let ok = compare(&objects, &output, effects)?;
-    let ok = compare_balances(fx, &data["gasPayment"], &objects, &output)? && ok;
+    let ok = compare_balances(fx, &data["gasPayment"], &output)? && ok;
     let gas = &fx["gasUsed"];
     println!(
         "gas (from chain, not computed by the replay): computation {}, storage {}, rebate {}",
@@ -369,13 +370,8 @@ fn compare_failure(err: &Value, outcome: &Outcome, packages: &Packages) -> Resul
 
 /// Address balances: the replay's net deposits/withdrawals per (owner, balance type) against
 /// the chain's accumulator writes. Gas paid from an address balance comes from the chain's gas
-/// figures (gas is not metered), as does the absorption of gas coins into it.
-fn compare_balances(
-    fx: &Value,
-    gas: &Value,
-    input: &[StateObject],
-    output: &movevm::Output,
-) -> Result<bool> {
+/// figures (gas is not metered).
+fn compare_balances(fx: &Value, gas: &Value, output: &movevm::Output) -> Result<bool> {
     let mut chain_net: BTreeMap<(String, String), i128> = BTreeMap::new();
     for c in fx["changedObjects"].as_array().into_iter().flatten() {
         let w = &c["accumulatorWrite"];
@@ -411,13 +407,8 @@ fn compare_balances(
         let owner = norm(gas["owner"].as_str().context("gas owner")?);
         let sui = canonical_type("0x2::balance::Balance<0x2::sui::SUI>")?;
         let cost = |k: &str| num(&fx["gasUsed"][k]).map(|v| v as i128).unwrap_or(0);
-        let mut net = cost("storageRebate") - cost("computationCost") - cost("storageCost");
-        for c in coins.iter().skip(1) {
-            let id = addr(c["objectId"].as_str().context("gas coin")?)?;
-            if let Some(o) = input.iter().find(|o| o.id == id) {
-                net += u64::from_le_bytes(o.bcs[32..40].try_into()?) as i128;
-            }
-        }
+        // (the replay itself records what the PTB took from / left in the balance)
+        let net = cost("storageRebate") - cost("computationCost") - cost("storageCost");
         *ours.entry((owner, sui)).or_default() += net;
     }
     ours.retain(|_, v| *v != 0);
@@ -605,9 +596,18 @@ impl Packages {
     /// the type arguments of the calls).
     async fn fetch(
         chain: &mut Chain,
+        checkpoint: u64,
         calls: &[(String, String, String, Vec<String>)],
         types: &[String],
     ) -> Result<Packages> {
+        // a package by storage ID; system packages as of the transaction's checkpoint
+        async fn get(chain: &mut Chain, a: &str, checkpoint: u64) -> Result<chain::Package> {
+            if is_system(a) {
+                chain.system_package(&format!("0x{a}"), checkpoint).await
+            } else {
+                chain.package(&format!("0x{a}"), None).await
+            }
+        }
         let mut original_of = BTreeMap::new();
         let mut roots = vec![];
         let mut loaded: BTreeSet<String> = BTreeSet::new(); // originals and defining IDs
@@ -615,7 +615,7 @@ impl Packages {
         let mut linkage: BTreeMap<String, (String, u64)> = BTreeMap::new();
         let storage: BTreeSet<&String> = calls.iter().map(|c| &c.0).collect();
         for s in storage {
-            let p = chain.package(&format!("0x{s}"), None).await?;
+            let p = get(chain, s, checkpoint).await?;
             let original = module_address(&p.modules)?;
             original_of.insert(s.clone(), original.clone());
             for l in &p.linkage {
@@ -635,9 +635,13 @@ impl Packages {
             if loaded.contains(original) {
                 continue;
             }
-            // frameworks are upgraded in place: ask for the version
-            let v = (original == upgraded).then_some(*version);
-            let p = chain.package(&format!("0x{upgraded}"), v).await?;
+            let p = if is_system(original) {
+                get(chain, original, checkpoint).await?
+            } else {
+                chain
+                    .package(&format!("0x{upgraded}"), Some(*version))
+                    .await?
+            };
             original_of.insert(upgraded.clone(), original.clone());
             loaded.insert(original.clone());
             loaded.extend(p.type_origins.iter().map(|t| norm(&t.2)));
@@ -659,7 +663,7 @@ impl Packages {
             if loaded.contains(&a) {
                 continue;
             }
-            let p = chain.package(&format!("0x{a}"), None).await?;
+            let p = get(chain, &a, checkpoint).await?;
             let original = module_address(&p.modules)?;
             let have = loaded.contains(&original);
             original_of.insert(a.clone(), original.clone());
@@ -789,8 +793,9 @@ fn ptb_json(
             _ => bail!("not supported: command {k}"),
         });
     }
-    // a version-0 entry reserves gas from the address balance (zero address in the PTB)
-    let coins: Vec<Value> = gas["objects"]
+    // a version-0 entry reserves gas from the address balance (zero address in the PTB);
+    // no gas objects at all is the same: gas from the address balance, nothing to absorb
+    let mut coins: Vec<Value> = gas["objects"]
         .as_array()
         .into_iter()
         .flatten()
@@ -802,6 +807,9 @@ fn ptb_json(
             }
         })
         .collect();
+    if coins.is_empty() {
+        coins.push(json!("0x0"));
+    }
     // net gas cost, as charged to the gas coin by the chain
     let cost = |k: &str| num(&gas_used[k]).with_context(|| format!("gasUsed.{k}"));
     let net =
@@ -814,6 +822,7 @@ fn ptb_json(
             "coins": coins,
             "charge": net.max(0) as u64,
             "refund": (-net).max(0) as u64,
+            "owner": gas["owner"],
         },
         "inputs": inputs,
         "commands": commands,
@@ -835,6 +844,13 @@ fn type_addresses(t: &str) -> Vec<String> {
 /// A JSON number, or a number in a string (how GraphQL prints u64s).
 fn num(v: &Value) -> Option<u64> {
     v.as_u64().or_else(|| v.as_str()?.parse().ok())
+}
+
+/// System packages (upgraded in place with the protocol).
+fn is_system(a: &str) -> bool {
+    let a = norm(a);
+    let a = a.trim_start_matches('0');
+    matches!(a, "1" | "2" | "3" | "b" | "dee9")
 }
 
 fn norm(a: &str) -> String {

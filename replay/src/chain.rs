@@ -135,6 +135,19 @@ impl Chain {
     }
 
     /// A package (a given version if `version` is set): its modules, linkage and type origins.
+    /// A system package (`0x1`, `0x2`, ...: upgraded in place) as of a checkpoint: transactions
+    /// run against the current framework, whatever version a package's linkage names.
+    pub async fn system_package(&mut self, address: &str, checkpoint: u64) -> Result<Package> {
+        let q = "query($a: SuiAddress!, $c: UInt53) { package(address: $a, atCheckpoint: $c) { version } }";
+        let d = self
+            .query(q, json!({ "a": address, "c": checkpoint }))
+            .await?;
+        let v = d["package"]["version"]
+            .as_u64()
+            .with_context(|| format!("system package {address} not found"))?;
+        self.package(address, Some(v)).await
+    }
+
     pub async fn package(&mut self, address: &str, version: Option<u64>) -> Result<Package> {
         // `package(address)` alone resolves to the *latest* version of the package's family;
         // a storage ID names one exact version, which `object(address)` gives

@@ -5,7 +5,8 @@
 //! Encoding of the PTB (one SP1 stdin buffer, BCS conventions; produced by the runner):
 //! ```text
 //! Ptb     = Gas, vector<Input>, vector<Command>
-//! Gas     = price: u64, rgp: u64, budget: u64, coins: vector<address>, charge: u64, refund: u64
+//! Gas     = price: u64, rgp: u64, budget: u64, coins: vector<address>, charge: u64, refund: u64,
+//!           owner: address
 //! Input   = 0 Object { id: address } | 1 Pure { bytes: vector<u8> }
 //! Command = 0 MoveCall { function: String, args: vector<Arg> }
 //!         | 1 TransferObjects { objects: vector<Arg>, address: Arg }
@@ -148,12 +149,17 @@ struct Interp<'a> {
     gas_coin: Option<Address>,
     /// The virtual gas coin of a gas reservation.
     virtual_gas: Option<(*mut u8, &'static TypeDesc)>,
+    /// Who pays for gas (the sender, or a sponsor).
+    gas_owner: Address,
     ctx: *mut u8,
 }
 
 /// Balance of the virtual gas coin beyond the absorbed coins (address balances are not
 /// modelled, so withdrawals from them are not checked).
 const ADDRESS_BALANCE_ALLOWANCE: u64 = 1 << 62;
+
+/// `0x2::balance::Balance<0x2::sui::SUI>`, canonically.
+const SUI_BALANCE: &[u8] = b"0000000000000000000000000000000000000000000000000000000000000002::balance::Balance<0000000000000000000000000000000000000000000000000000000000000002::sui::SUI>";
 
 /// `0x2::coin::Coin<0x2::sui::SUI>`, canonically.
 const SUI_COIN: &[u8] = b"0000000000000000000000000000000000000000000000000000000000000002::coin::Coin<0000000000000000000000000000000000000000000000000000000000000002::sui::SUI>";
@@ -167,6 +173,7 @@ pub extern "C" fn move_rt_sui_run_ptb(ctx: *mut u8) {
     crate::tx::set_gas(price, rgp, budget);
     let gas_coins: Vec<Address> = (0..r.uleb()).map(|_| r.address()).collect();
     let (charge, refund) = (r.u64(), r.u64());
+    let gas_owner = r.address();
     let inputs: Vec<Input> = (0..r.uleb())
         .map(|_| match r.byte() {
             0 => Input::Object(r.address()),
@@ -179,6 +186,7 @@ pub extern "C" fn move_rt_sui_run_ptb(ctx: *mut u8) {
         results: vec![],
         gas_coin: gas_coins.first().copied(),
         virtual_gas: None,
+        gas_owner,
         ctx,
     };
     t.smash_gas(&gas_coins);
@@ -440,6 +448,10 @@ impl<'a> Interp<'a> {
             // gas from the address balance: the coins go into it
             let d = state::desc_by_name(SUI_COIN).unwrap_or_else(|| abort_in(PTB, E_NO_GAS_COIN));
             let p = desc::alloc(d.size() as usize);
+            // Sui materializes it as a coin object: its UID is the transaction's first new ID
+            let id_offset = d.fields()[0].offset();
+            // SAFETY: `p` has room for a `Coin`; its UID is a 32-byte address at `id_offset`.
+            unsafe { *(p.add(id_offset) as *mut Address) = crate::tx::new_id() };
             let mut total = ADDRESS_BALANCE_ALLOWANCE;
             for c in rest {
                 let (q, qd) = gas_coin(c);
@@ -468,6 +480,29 @@ impl<'a> Interp<'a> {
 
     /// Debit the (caller-supplied) gas charge from the gas coin, credit the rebate.
     fn charge_gas(&mut self, charge: u64, refund: u64) {
+        if let Some((p, d)) = self.virtual_gas {
+            // what is left of the virtual gas coin returns to the address balance: the net
+            // change of the balance, beyond gas (charged by the caller), is recorded
+            let left = *coin_value(p, d) as i128 - ADDRESS_BALANCE_ALLOWANCE as i128;
+            let (op, amount) = if left >= 0 {
+                (crate::accumulator::MERGE, left as u64)
+            } else {
+                (crate::accumulator::SPLIT, (-left) as u64)
+            };
+            if amount != 0 {
+                // SAFETY: a constant name.
+                unsafe {
+                    crate::effects::record_accumulator(
+                        SUI_BALANCE.as_ptr(),
+                        SUI_BALANCE.len() as u64,
+                        &self.gas_owner,
+                        op,
+                        amount,
+                    )
+                };
+            }
+            return;
+        }
         let Some(id) = self.gas_coin else {
             return;
         };

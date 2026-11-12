@@ -2,7 +2,7 @@
 //! encoding out (`runtime/sui/src/ptb.rs`).
 //!
 //! ```json
-//! { "gas":      {"price": 1000, "rgp": 1000, "budget": 0, "coins": ["0x…"], "charge": 0, "refund": 0},
+//! { "gas":      {"price": 1000, "rgp": 1000, "budget": 0, "coins": ["0x…"], "charge": 0, "refund": 0, "owner": "0x…"},
 //!   "inputs":   [ {"object": "0x…"}, {"pure": "0x2a00000000000000"}, {"value": 42, "type": "u64"} ],
 //!   "commands": [ {"MoveCall": {"function": "0x…::pool::place_market_order<0x…::ns::NS, 0x…::usdc::USDC>",
 //!                               "args": [{"Input": 0}, {"Result": 0}, {"NestedResult": [1, 0]}, "GasCoin"]}},
@@ -38,6 +38,10 @@ pub fn encode(abi: &Abi, ptb: &Value) -> Result<Vec<u8>> {
     for k in ["charge", "refund"] {
         out.extend(gas[k].as_u64().unwrap_or(0).to_le_bytes());
     }
+    out.extend(match gas["owner"].as_str() {
+        Some(o) => address(o)?,
+        None => vec![0; 32],
+    });
     let inputs = ptb["inputs"]
         .as_array()
         .map(Vec::as_slice)
