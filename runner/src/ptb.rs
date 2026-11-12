@@ -112,7 +112,7 @@ fn address(s: &str) -> Result<Vec<u8>> {
 }
 
 fn hex(h: &str) -> Result<Vec<u8>> {
-    if h.len() % 2 != 0 {
+    if !h.len().is_multiple_of(2) {
         bail!("odd-length hex {h}");
     }
     (0..h.len() / 2)
