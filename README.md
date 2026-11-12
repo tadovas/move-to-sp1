@@ -1,6 +1,6 @@
 # move2sp1 — Sui transactions, proven
 
-**[▶ Demo video (15 min)](https://www.loom.com/share/a1a40a651a6744dcbd039f6e193d818c)** — the
+**[▶ Demo video (10 min)](https://www.loom.com/share/a5f2ac7350a2419e808001565b5b1919)** — the
 walkthrough in `scripts/demo.sh`: compile Move, run DeepBook's tests in the zkVM, replay and
 prove mainnet transactions, replay whole checkpoints.
 
