@@ -7,7 +7,11 @@ the current mainnet framework version, read from their disassembly via GraphQL. 
 "implemented" if the compiler's native lowering (compiler/src/translate/{natives,sui}.rs)
 handles `module::function`.
 
-usage: scripts/natives-coverage.py [--markdown]
+With --history, also scans every STEP-th earlier version of each package (default 5) and
+lists natives that only exist in older frameworks (renamed or removed since) — replays of old
+transactions compile against the framework of their checkpoint, so those matter too.
+
+usage: scripts/natives-coverage.py [--markdown] [--history [STEP]]
 """
 
 import json
@@ -33,14 +37,14 @@ def gql(query, variables=None):
     return d["data"]
 
 
-def natives(pkg):
+def natives(pkg, version=None):
     out, after = [], None
     while True:
         d = gql(
-            """query($a: SuiAddress!, $after: String) { package(address: $a) { version
+            """query($a: SuiAddress!, $v: UInt53, $after: String) { package(address: $a, version: $v) { version
                 modules(first: 20, after: $after) { pageInfo { hasNextPage endCursor }
                   nodes { name disassembly } } } }""",
-            {"a": pkg, "after": after},
+            {"a": pkg, "v": version, "after": after},
         )["package"]
         for m in d["modules"]["nodes"]:
             for f in re.findall(r"^\s*native\s+(?:(?:public\(\w+\)|public|entry|friend|fun)\s+)*(\w+)\s*[<(]", m["disassembly"], re.M):
@@ -59,6 +63,23 @@ def main():
         version, fns = natives(pkg)
         for f in sorted(set(fns)):
             rows.append((pkg, version, f, f'"{f}"' in src))
+    if "--history" in sys.argv:
+        i = sys.argv.index("--history")
+        step = int(sys.argv[i + 1]) if len(sys.argv) > i + 1 and sys.argv[i + 1].isdigit() else 5
+        current = {(r[0], r[2]) for r in rows}
+        old = {}
+        for pkg in PACKAGES:
+            latest = natives(pkg)[0]
+            for v in range(1, latest, step):
+                try:
+                    _, fns = natives(pkg, v)
+                except SystemExit:
+                    continue
+                for f in fns:
+                    if (pkg, f) not in current:
+                        old.setdefault((pkg, f), v)
+        for (pkg, f), v in sorted(old.items()):
+            rows.append((pkg, f"<={v}", f, f'"{f}"' in src))
     done = sum(r[3] for r in rows)
     if "--markdown" in sys.argv:
         print(f"| package | native | implemented |\n|---|---|---|")
