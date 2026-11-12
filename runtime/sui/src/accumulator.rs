@@ -79,3 +79,20 @@ pub unsafe extern "C" fn move_rt_sui_accumulator_withdraw(
         crate::effects::record_accumulator(name, name_len, owner, SPLIT, amount);
     }
 }
+
+/// `accumulator::emit_deposit_event<T>` / `emit_withdraw_event<T>` (`op`: 0 merge, 1 split).
+///
+/// # Safety
+/// `name` points to `name_len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn move_rt_sui_accumulator_event(
+    name: *const u8,
+    name_len: u64,
+    recipient: &Address,
+    op: u8,
+    amount: u64,
+) {
+    let op = if op == 0 { MERGE } else { SPLIT };
+    // SAFETY: guaranteed by the caller.
+    unsafe { crate::effects::record_accumulator(name, name_len, recipient, op, amount) };
+}

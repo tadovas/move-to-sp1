@@ -105,6 +105,21 @@ unsafe extern "C" {
     static __move_fast_ids: u8;
 }
 
+/// `tx_context::derive_id(tx_hash, ids_created)`: the ID Sui derives for that counter.
+#[unsafe(no_mangle)]
+pub extern "C" fn move_rt_sui_derive_id(tx_hash: &VecHeader, ids_created: u64, out: &mut Address) {
+    // SAFETY: a constant emitted by the compiler.
+    let fast = unsafe { __move_fast_ids } != 0;
+    *out = crate::hash::id_hash(
+        fast,
+        &[
+            &[crate::hash::REGULAR_OBJECT_ID],
+            tx_hash.bytes(),
+            &ids_created.to_le_bytes(),
+        ],
+    );
+}
+
 /// A fresh object ID derived as the program's own `object::new` calls do (PTB commands).
 pub(crate) fn new_id() -> Address {
     // SAFETY: a constant emitted by the compiler.

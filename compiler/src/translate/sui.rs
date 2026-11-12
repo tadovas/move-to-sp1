@@ -185,6 +185,13 @@ impl<'ctx> Translator<'ctx, '_> {
                 let v = self.call_runtime(rt, Some(i64t.into()), &[])?.unwrap();
                 fr.push(v, Type::U64);
             }
+            "tx_context::derive_id" => {
+                let (ids_created, _) = fr.pop()?;
+                let (tx_hash, _) = fr.pop()?; // vector<u8>
+                let args = vec![self.spill(tx_hash)?.into(), ids_created.into()];
+                let a = self.address_from_runtime("move_rt_sui_derive_id", args)?;
+                fr.push(a, Type::Address);
+            }
             "tx_context::native_sponsor" => {
                 // the gas owner of a PTB when not the sender (none outside PTBs)
                 let v = self.runtime_bytes("move_rt_sui_sponsor", vec![])?;
@@ -290,6 +297,30 @@ impl<'ctx> Translator<'ctx, '_> {
                     self.spill(recipient)?.into(),
                 ];
                 self.call_runtime("move_rt_sui_accumulator_add", None, &args)?;
+            }
+            "accumulator::emit_deposit_event" | "accumulator::emit_withdraw_event" => {
+                let (amount, _) = fr.pop()?; // u64
+                let (recipient, _) = fr.pop()?;
+                fr.pop()?; // accumulator address
+                let op = if name.ends_with("deposit_event") {
+                    0
+                } else {
+                    1
+                }; // merge / split
+                let (ty_name, len) = self.const_bytes(t(0).canonical(self.prog).as_bytes());
+                let args = [
+                    ty_name.into(),
+                    i64t.const_int(len, false).into(),
+                    self.spill(recipient)?.into(),
+                    self.ctx.i8_type().const_int(op, false).into(),
+                    amount.into(),
+                ];
+                self.call_runtime("move_rt_sui_accumulator_event", None, &args)?;
+            }
+            "funds_accumulator::reserve_object_funds_for_withdrawal" => {
+                // object balances are not modelled: the reservation is not checked
+                fr.pop()?; // limit
+                fr.pop()?; // owner
             }
             "funds_accumulator::withdraw_from_accumulator_address" => {
                 let (value, _) = fr.pop()?; // u256
