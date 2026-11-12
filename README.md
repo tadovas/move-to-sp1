@@ -70,6 +70,13 @@ a zkVM is possible but costly (an interpreter loop per instruction, proven). mov
 
 ### Results
 
+* **Whole checkpoints** (`scripts/replay-sample.py --checkpoint A-B`): every user transaction
+  of 20 consecutive mainnet checkpoints (344,393,000–019, ~5 s of Sui, 572 transactions):
+  **529 byte-identical, 0 differences**; the rest stopped cleanly — 36 failed arbitrage
+  transactions whose input coin the GraphQL endpoint has no record of (apparently
+  address-balance-backed), and a few missing natives since added. Checkpoints from a month ago:
+  42/42. From May 2025: 60/61 after adding the older framework's `type_name::get`; the other
+  needs a BLS12-381 signature check.
 * **199 of 200** random recent mainnet transactions replayed byte-identically on the first run
   of the final sampler (`scripts/replay-sample.py 200`, 66 s with 8 in parallel; the one
   failure, a type added in a later package version, is fixed). Earlier samples found and fixed:
@@ -94,8 +101,9 @@ a zkVM is possible but costly (an interpreter loop per instruction, proven). mov
   Core proofs; "compressed" is SP1's constant-size recursive proof. A trivial program (`add`)
   takes ~22 s, so most of the time for typical transactions is the prover's fixed cost.
   Replay execution alone (no proof) takes 15–100 ms per transaction in SP1's executor.
-* Natives: **67 of 102** Sui framework natives implemented (`scripts/natives-coverage.py`); the
-  rest are mostly heavy cryptography (BLS12-381, Groth16, group operations, Poseidon, VRF, VDF,
+* Natives: **71 of 105** Sui framework natives implemented, counting those of older framework
+  versions (`scripts/natives-coverage.py --history`; only system packages may declare natives, so
+  this list is complete). The rest are mostly heavy cryptography (BLS12-381, Groth16, group operations, Poseidon, VRF, VDF,
   zkLogin, Nitro attestation) and stop with a clean "unsupported native" error at compile time.
 
 ## What's faked, mocked, or not covered
