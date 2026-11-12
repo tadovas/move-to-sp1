@@ -466,6 +466,11 @@ pub(crate) fn object_in_place(id: &Address) -> Option<(*mut u8, &'static TypeDes
     INVENTORY.with(|inv| inv.objects.get(id).map(|o| (o.data, unsafe { &*o.desc })))
 }
 
+/// The owner of object `id` (`None` inside: shared), if it is in the state.
+pub(crate) fn owner_of_object(id: &Address) -> Option<Owner> {
+    INVENTORY.with(|inv| inv.objects.get(id).map(|o| o.owner))
+}
+
 /// Delete object `id` from the state, without the ownership check (smashed gas coins).
 pub(crate) fn delete_object(id: &Address) {
     INVENTORY.with(|inv| inv.objects.remove(id));

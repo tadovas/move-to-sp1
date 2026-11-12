@@ -8,6 +8,7 @@
 //! Gas     = price: u64, rgp: u64, budget: u64, coins: vector<address>, charge: u64, refund: u64,
 //!           owner: address
 //! Input   = 0 Object { id: address } | 1 Pure { bytes: vector<u8> }
+//!         | 2 Reservation { coin_type: String, amount: u64 }
 //! Command = 0 MoveCall { function: String, args: vector<Arg> }
 //!         | 1 TransferObjects { objects: vector<Arg>, address: Arg }
 //!         | 2 SplitCoins { coin: Arg, amounts: vector<Arg> }
@@ -26,6 +27,11 @@
 //! them plus the balance. Address balances are not modelled: the virtual coin's balance part
 //! is an unchecked allowance, and what is left of it is discarded. The gas coin may belong to a sponsor: using it is not subject to
 //! the sender-ownership check.
+//!
+//! A reservation (Sui's coin reservation: an object reference standing for `amount` withdrawn
+//! from the sender's address balance) becomes a fresh `Coin<T>` of that value, owned by the
+//! sender; the withdrawal is recorded, and what is left of the coin if the transaction does not
+//! move it goes back to the balance at the end.
 //!
 //! Values are typed when they are used: pure bytes are decoded, and vectors built by
 //! `MakeMoveVec` are laid out, with the type of the parameter that consumes them.
@@ -122,6 +128,8 @@ fn desc_of(p: *const TypeDesc) -> &'static TypeDesc {
 enum Input<'a> {
     Object(Address),
     Pure(&'a [u8]),
+    /// Coin type (canonical `Coin<T>`), amount: materialized by `reserve_coins`.
+    Reservation(&'a [u8], u64),
 }
 
 #[derive(Clone, Copy)]
@@ -179,6 +187,7 @@ pub extern "C" fn move_rt_sui_run_ptb(ctx: *mut u8) {
         .map(|_| match r.byte() {
             0 => Input::Object(r.address()),
             1 => Input::Pure(r.bytes()),
+            2 => Input::Reservation(r.bytes(), r.u64()),
             _ => abort_in(PTB, E_BAD_PTB),
         })
         .collect();
@@ -191,6 +200,7 @@ pub extern "C" fn move_rt_sui_run_ptb(ctx: *mut u8) {
         ctx,
     };
     t.smash_gas(&gas_coins);
+    let reserved = t.reserve_coins();
     for _ in 0..r.uleb() {
         let produced = match r.byte() {
             0 => {
@@ -226,6 +236,7 @@ pub extern "C" fn move_rt_sui_run_ptb(ctx: *mut u8) {
         };
         t.results.push(produced.into_iter().map(Some).collect());
     }
+    t.return_reservations(&reserved);
     t.charge_gas(charge, refund);
     store::move_rt_sui_check_inputs();
 }
@@ -274,7 +285,8 @@ impl<'a> Interp<'a> {
             Arg::Input(i) => match self.inputs.get(i as usize) {
                 Some(Input::Object(id)) => object(id),
                 Some(Input::Pure(bytes)) => Val::Pure(bytes),
-                None => abort_in(PTB, E_BAD_ARGUMENT),
+                // materialized into objects before the commands run
+                Some(Input::Reservation(..)) | None => abort_in(PTB, E_BAD_ARGUMENT),
             },
             Arg::Result(c, i) => {
                 let slot = self.result_slot(c, i);
@@ -440,6 +452,44 @@ impl<'a> Interp<'a> {
         vec![]
     }
 
+    /// Coin reservations become coins owned by the sender (fresh IDs, in input order).
+    fn reserve_coins(&mut self) -> Vec<(Address, &'static TypeDesc)> {
+        let sender = crate::tx::sender();
+        let mut reserved = vec![];
+        for input in self.inputs.iter_mut() {
+            let Input::Reservation(name, amount) = *input else {
+                continue;
+            };
+            let d = state::desc_by_name(name).unwrap_or_else(|| abort_in(PTB, E_UNREGISTERED_TYPE));
+            let p = desc::alloc(d.size() as usize);
+            let id = crate::tx::new_id();
+            // SAFETY: `p` has room for a `Coin`; its UID is a 32-byte address at offset 0.
+            unsafe { *(p.add(d.fields()[0].offset()) as *mut Address) = id };
+            *coin_value(p, d) = amount;
+            record_balance(&sender, d, crate::accumulator::SPLIT, amount);
+            // SAFETY: `p` holds a `Coin` of type `d`.
+            unsafe { store::put(Some(sender), d, p) };
+            *input = Input::Object(id);
+            reserved.push((id, d));
+        }
+        reserved
+    }
+
+    /// What is left of reserved coins the transaction did not move returns to the balance.
+    fn return_reservations(&mut self, reserved: &[(Address, &'static TypeDesc)]) {
+        let sender = crate::tx::sender();
+        for (id, d) in reserved {
+            let Some((p, pd)) = store::object_in_place(id) else {
+                continue; // moved: a coin from now on
+            };
+            if !core::ptr::eq(pd, *d) || store::owner_of_object(id) != Some(Some(sender)) {
+                continue;
+            }
+            record_balance(&sender, d, crate::accumulator::MERGE, *coin_value(p, d));
+            store::delete_object(id);
+        }
+    }
+
     /// Gas smashing: the other gas coins are merged into the first and deleted.
     fn smash_gas(&mut self, coins: &[Address]) {
         let Some((first, rest)) = coins.split_first() else {
@@ -513,6 +563,19 @@ impl<'a> Interp<'a> {
             .checked_sub(charge)
             .unwrap_or_else(|| abort_in(PTB, E_INSUFFICIENT_GAS));
     }
+}
+
+/// Record an address-balance change for the balance type of coin type `d`.
+fn record_balance(owner: &Address, d: &TypeDesc, op: u8, amount: u64) {
+    let coin = state::canonical_name(d).unwrap_or_else(|| abort_in(PTB, E_UNREGISTERED_TYPE));
+    // `<0x2>::coin::Coin<T>` -> `<0x2>::balance::Balance<T>`
+    let mut name: Vec<u8> = COIN_PREFIX[..66].to_vec();
+    name.extend_from_slice(b"balance::Balance<");
+    name.extend_from_slice(&coin[COIN_PREFIX.len()..]);
+    // SAFETY: `name` is `name.len()` bytes.
+    unsafe {
+        crate::effects::record_accumulator(name.as_ptr(), name.len() as u64, owner, op, amount)
+    };
 }
 
 fn gas_coin(id: &Address) -> (*mut u8, &'static TypeDesc) {

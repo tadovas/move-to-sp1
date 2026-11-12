@@ -131,6 +131,30 @@ async fn main() -> Result<()> {
             .join(", ")
     );
 
+    // coin reservations: object references standing for funds from the sender's address balance
+    let sender = tx["sender"]["address"].as_str().context("sender")?;
+    let mut reservations: BTreeMap<usize, (String, u64)> = BTreeMap::new();
+    for (n, i) in pt["inputs"]
+        .as_array()
+        .context("inputs")?
+        .iter()
+        .enumerate()
+    {
+        if i["kind"] != "IMMUTABLE_OR_OWNED" {
+            continue;
+        }
+        if let Some((amount, coin)) =
+            coin_reservation(&mut chain, i, sender, &calls, &extra_types).await?
+        {
+            println!(
+                "  input {n}: coin reservation of {amount} {} from the sender's address balance",
+                short_type(&canonical_type(&coin)?)
+            );
+            extra_types.push(format!("0x2::coin::Coin<{coin}>"));
+            reservations.insert(n, (coin, amount));
+        }
+    }
+
     // input state: what the effects say was read or written, at input versions
     let mut keys: Vec<(String, u64)> = vec![];
     let mut absent: Vec<[u8; 32]> = vec![];
@@ -151,8 +175,13 @@ async fn main() -> Result<()> {
             }
         }
     }
-    for i in pt["inputs"].as_array().context("inputs")? {
-        if i["kind"] == "IMMUTABLE_OR_OWNED" {
+    for (n, i) in pt["inputs"]
+        .as_array()
+        .context("inputs")?
+        .iter()
+        .enumerate()
+    {
+        if i["kind"] == "IMMUTABLE_OR_OWNED" && !reservations.contains_key(&n) {
             keys.push((
                 i["objectId"].as_str().context("objectId")?.into(),
                 num(&i["version"]).context("version")?,
@@ -276,6 +305,7 @@ async fn main() -> Result<()> {
         epoch,
         &fx["gasUsed"],
         &packages,
+        &reservations,
     )?;
     std::fs::write(dir.join("ctx.json"), &ctx)?;
     std::fs::write(dir.join("ptb.json"), serde_json::to_string_pretty(&ptb)?)?;
@@ -784,12 +814,18 @@ fn ptb_json(
     epoch: &Value,
     gas_used: &Value,
     packages: &Packages,
+    reservations: &BTreeMap<usize, (String, u64)>,
 ) -> Result<Value> {
     let inputs: Vec<Value> = pt["inputs"]
         .as_array()
         .context("inputs")?
         .iter()
-        .map(|i| match i["kind"].as_str() {
+        .enumerate()
+        .map(|(n, i)| match i["kind"].as_str() {
+            _ if reservations.contains_key(&n) => {
+                let (coin, amount) = &reservations[&n];
+                Ok(json!({ "reservation": { "coin": format!("0x2::coin::Coin<{coin}>"), "amount": amount } }))
+            }
             Some("PURE") => {
                 Ok(json!({ "pure": format!("base64:{}", i["pure"].as_str().context("pure")?) }))
             }
@@ -982,4 +1018,112 @@ fn iso_ms(s: &str) -> Result<u64> {
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146097 + doe - 719468;
     Ok((((days * 24 + hh) * 60 + mm) * 60 + ss) as u64 * 1000 + ms as u64)
+}
+
+/// A coin reservation (`IMMUTABLE_OR_OWNED` input whose "digest" is
+/// `amount: u64 LE || epoch: u32 LE || 0xac * 20` and whose ID is the sender's balance
+/// accumulator ID for `Balance<T>`, XOR the chain identifier): `(amount, T)`. `T` is found
+/// among the types the transaction mentions.
+async fn coin_reservation(
+    chain: &mut Chain,
+    input: &Value,
+    sender: &str,
+    calls: &[(String, String, String, Vec<String>)],
+    types: &[String],
+) -> Result<Option<(u64, String)>> {
+    let digest = bs58::decode(input["digest"].as_str().unwrap_or_default()).into_vec()?;
+    if digest.len() != 32 || digest[12..].iter().any(|&b| b != 0xac) {
+        return Ok(None);
+    }
+    let amount = u64::from_le_bytes(digest[..8].try_into()?);
+    let chain_id = chain.chain_identifier().await?;
+    let masked = addr(input["objectId"].as_str().context("objectId")?)?;
+    let unmasked: Vec<u8> = masked.iter().zip(chain_id).map(|(a, b)| a ^ b).collect();
+    let mut candidates: BTreeSet<String> = BTreeSet::from(["0x2::sui::SUI".to_string()]);
+    for t in calls.iter().flat_map(|c| &c.3).chain(types) {
+        candidates.insert(t.clone());
+        // non-generic types inside it
+        for part in t.split(['<', '>', ',']) {
+            if part.contains("::") {
+                candidates.insert(part.trim().to_string());
+            }
+        }
+    }
+    for t in candidates {
+        let Ok(tag) = type_tag_bcs(&t) else { continue };
+        // accumulator_address<Balance<T>>(sender) = dynamic field ID of Key<Balance<T>> under 0xacc
+        let mut key_tag = vec![7];
+        key_tag.extend(addr("0x2")?);
+        key_tag.extend(bcs_str("accumulator"));
+        key_tag.extend(bcs_str("Key"));
+        key_tag.push(1);
+        key_tag.push(7);
+        key_tag.extend(addr("0x2")?);
+        key_tag.extend(bcs_str("balance"));
+        key_tag.extend(bcs_str("Balance"));
+        key_tag.push(1);
+        key_tag.extend(&tag);
+        use blake2::{Blake2b, Digest, digest::consts::U32};
+        let mut h = Blake2b::<U32>::new();
+        h.update([0xf0]);
+        h.update(addr("0xacc")?);
+        h.update(32u64.to_le_bytes());
+        h.update(addr(sender)?);
+        h.update(&key_tag);
+        if h.finalize()[..] == unmasked[..] {
+            return Ok(Some((amount, t)));
+        }
+    }
+    bail!(
+        "not supported yet: a coin reservation input of a coin type not among the transaction's types"
+    )
+}
+
+fn bcs_str(s: &str) -> Vec<u8> {
+    let mut v = vec![s.len() as u8];
+    v.extend(s.as_bytes());
+    v
+}
+
+/// BCS of a Move `TypeTag`, from Sui's type syntax.
+fn type_tag_bcs(t: &str) -> Result<Vec<u8>> {
+    let t = t.trim();
+    let prim = |b: u8| Ok(vec![b]);
+    match t {
+        "bool" => return prim(0),
+        "u8" => return prim(1),
+        "u64" => return prim(2),
+        "u128" => return prim(3),
+        "address" => return prim(4),
+        "signer" => return prim(5),
+        "u16" => return prim(8),
+        "u32" => return prim(9),
+        "u256" => return prim(10),
+        _ => {}
+    }
+    let (head, args) = match t.find('<') {
+        Some(i) => (
+            &t[..i],
+            move2sp1::translate::split_type_args(t[i + 1..].strip_suffix('>').context("bad type")?),
+        ),
+        None => (t, vec![]),
+    };
+    if head == "vector" {
+        let mut v = vec![6];
+        v.extend(type_tag_bcs(args.first().context("vector type")?)?);
+        return Ok(v);
+    }
+    let parts: Vec<&str> = head.split("::").collect();
+    let [a, m, n] = parts.as_slice() else {
+        bail!("bad type {t}")
+    };
+    let mut v = vec![7];
+    v.extend(addr(a)?);
+    v.extend(bcs_str(m));
+    v.extend(bcs_str(n));
+    v.push(args.len() as u8);
+    for a in &args {
+        v.extend(type_tag_bcs(a)?);
+    }
+    Ok(v)
 }

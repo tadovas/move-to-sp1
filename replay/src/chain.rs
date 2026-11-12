@@ -60,6 +60,15 @@ impl Chain {
         Ok(data)
     }
 
+    /// The chain identifier: the genesis checkpoint digest (32 bytes).
+    pub async fn chain_identifier(&mut self) -> Result<[u8; 32]> {
+        let d = self.query("{ chainIdentifier }", json!({})).await?;
+        let id =
+            bs58::decode(d["chainIdentifier"].as_str().context("chainIdentifier")?).into_vec()?;
+        id.try_into()
+            .map_err(|_| anyhow::anyhow!("bad chain identifier"))
+    }
+
     /// The transaction, its effects (JSON), events and object changes.
     pub async fn transaction(&mut self, digest: &str) -> Result<Value> {
         let q = format!(
