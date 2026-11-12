@@ -317,7 +317,7 @@ async fn aggregate(label: &str, dirs: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
-/// `movevm test <dir>`: run the unit tests compiled by `move2sp1 test` and compare each
+/// `movevm test <dir>`: run the unit tests compiled by `move2sp1 build-tests` and compare each
 /// outcome with its `#[expected_failure]` expectation.
 async fn test(dir: PathBuf) -> Result<()> {
     let manifest: Vec<Value> = serde_json::from_slice(&std::fs::read(dir.join("tests.json"))?)?;
