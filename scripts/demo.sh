@@ -38,7 +38,7 @@ run "move2sp1 build examples/fib.move -a demo=0x100 -e fib -o out/fib.elf"
 run "movevm run out/fib.elf 30"
 
 step "2. DeepBook v3's own unit tests: every #[test] compiled to its own ELF, then run in the zkVM"
-run "move2sp1 test examples/deepbook-v3/deepbook -o out/tests/deepbook 2>&1 | tail -1"
+run "move2sp1 build-tests examples/deepbook-v3/deepbook -o out/tests/deepbook 2>&1 | tail -1"
 run "movevm test out/tests/deepbook | grep -v '^stderr' | tail -4"
 
 step "3. Replay a mainnet DeepBook v3 market order (bytecode from chain, objects at input versions)"

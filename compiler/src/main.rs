@@ -62,9 +62,9 @@ enum Cmd {
         #[arg(long)]
         emit_llvm: Option<PathBuf>,
     },
-    /// Compile every `#[test]` of a package into its own ELF, plus a `tests.json` manifest
-    /// (run them with `movevm test <dir>`).
-    Test {
+    /// Compile every `#[test]` of a package into its own ELF, plus a `tests.json` manifest of
+    /// expected outcomes. Nothing is run: run them with `movevm test <dir>`.
+    BuildTests {
         #[command(flatten)]
         input: Input,
         /// Output directory.
@@ -138,7 +138,7 @@ fn main() -> Result<()> {
                 abi.returns.join(", "),
             );
         }
-        Cmd::Test {
+        Cmd::BuildTests {
             input,
             output,
             filter,
@@ -169,7 +169,7 @@ impl Input {
     }
 }
 
-/// `move2sp1 test`: one ELF per `#[test]` and a manifest of expected outcomes.
+/// `move2sp1 build-tests`: one ELF per `#[test]` and a manifest of expected outcomes.
 fn test(input: &Input, out: &Path, filter: Option<&str>) -> Result<()> {
     let compiled = move2sp1::load(&input.sources(), true)?;
     std::fs::create_dir_all(out)?;

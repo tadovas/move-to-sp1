@@ -79,7 +79,7 @@ backed by SP1's precompiles (SHA-256, Keccak, secp256k1/r1, ed25519, BLS12-381).
   CPU prover; `movevm aggregate` proves a batch of runs and folds them into one proof: an SP1
   program (`runtime/aggregator`) verifies each run's compressed proof inside the zkVM and commits
   to (verifying key, public-values digest) for each.
-* **Unit tests in the zkVM**: `move2sp1 test` + `movevm test` compile and run a package's
+* **Unit tests in the zkVM**: `move2sp1 build-tests` + `movevm test` compile and run a package's
   `#[test]`s, checking `#[expected_failure]` codes and locations.
 
 ## Results

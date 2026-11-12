@@ -66,7 +66,8 @@ enum Cmd {
     },
     /// Print the program's entry signature.
     Info { elf: PathBuf },
-    /// Run the unit tests compiled by `move2sp1 test` (a directory with `tests.json`).
+    /// Run the unit tests compiled by `move2sp1 build-tests` (a directory with `tests.json`) and
+    /// check each outcome against its expectation.
     Test { dir: PathBuf },
 }
 
