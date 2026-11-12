@@ -186,8 +186,8 @@ impl<'ctx> Translator<'ctx, '_> {
                 fr.push(v, Type::U64);
             }
             "tx_context::native_sponsor" => {
-                // sponsored transactions are not modelled: no sponsor
-                let v = self.vec_from_values(&Type::Address, &[])?;
+                // the gas owner of a PTB when not the sender (none outside PTBs)
+                let v = self.runtime_bytes("move_rt_sui_sponsor", vec![])?;
                 fr.push(v, Type::Vector(Box::new(Type::Address)));
             }
             "tx_context::replace" => {

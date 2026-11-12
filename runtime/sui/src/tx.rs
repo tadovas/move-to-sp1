@@ -18,6 +18,8 @@ struct TxState {
     rgp: u64,
     gas_price: u64,
     gas_budget: u64,
+    /// The gas owner, when not the sender.
+    sponsor: Option<Address>,
 }
 
 static TX: Global<TxState> = Global::new(TxState {
@@ -30,6 +32,7 @@ static TX: Global<TxState> = Global::new(TxState {
     rgp: 0,
     gas_price: 0,
     gas_budget: 0,
+    sponsor: None,
 });
 
 fn u64_of(v: Value) -> u64 {
@@ -129,6 +132,21 @@ pub(crate) fn set_gas(gas_price: u64, rgp: u64, gas_budget: u64) {
     });
 }
 
+/// The gas owner of a PTB: a sponsor if it is not the sender.
+pub(crate) fn set_gas_owner(owner: &Address) {
+    TX.with(|tx| tx.sponsor = (*owner != [0; 32] && *owner != tx.sender).then_some(*owner));
+}
+
+/// `tx_context::native_sponsor`: `vector<address>`, empty or the sponsor.
+#[unsafe(no_mangle)]
+pub extern "C" fn move_rt_sui_sponsor(out: &mut core::mem::MaybeUninit<VecHeader>) {
+    let s = TX.with(|tx| tx.sponsor);
+    out.write(VecHeader::from_elems(
+        s.as_ref().map_or(&[][..], |a| &a[..]),
+        32,
+    ));
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn move_rt_sui_rgp() -> u64 {
     TX.with(|tx| tx.rgp)
@@ -168,6 +186,7 @@ pub extern "C" fn move_rt_sui_tx_replace(
             rgp,
             gas_price,
             gas_budget,
+            sponsor: None,
         }
     });
 }

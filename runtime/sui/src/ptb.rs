@@ -174,6 +174,7 @@ pub extern "C" fn move_rt_sui_run_ptb(ctx: *mut u8) {
     let gas_coins: Vec<Address> = (0..r.uleb()).map(|_| r.address()).collect();
     let (charge, refund) = (r.u64(), r.u64());
     let gas_owner = r.address();
+    crate::tx::set_gas_owner(&gas_owner);
     let inputs: Vec<Input> = (0..r.uleb())
         .map(|_| match r.byte() {
             0 => Input::Object(r.address()),

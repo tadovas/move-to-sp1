@@ -182,6 +182,14 @@ impl VecHeader {
         items(self.data, self.len)
     }
 
+    /// A fresh vector of `bytes.len() / elem_size` elements laid out in `bytes`.
+    pub fn from_elems(bytes: &[u8], elem_size: usize) -> VecHeader {
+        let mut v = VecHeader::from_bytes(bytes);
+        v.len = (bytes.len() / elem_size) as u64;
+        v.cap = v.len;
+        v
+    }
+
     /// A fresh `vector<u8>` holding `bytes`.
     pub fn from_bytes(bytes: &[u8]) -> VecHeader {
         let data = alloc(bytes.len());
