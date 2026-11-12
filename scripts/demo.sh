@@ -28,5 +28,8 @@ if [[ ${PROVE:-1} == 1 ]]; then
   run target/release/movevm prove $d/image.elf "$(cat $d/ctx.json)" --ptb $d/ptb.json --state-in $d/state_in.bin
 fi
 
-step "7. Random recent mainnet transactions"
-run scripts/replay-sample.py 20
+step "7. Every user transaction of 4 consecutive mainnet checkpoints (~1 s of Sui), 8 in parallel"
+run scripts/replay-sample.py --checkpoint "${CHECKPOINTS:-344393009-344393012}" --jobs 8
+
+step "8. Random recent mainnet transactions"
+run scripts/replay-sample.py 20 --jobs 8
