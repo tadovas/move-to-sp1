@@ -72,11 +72,9 @@ a zkVM is possible but costly (an interpreter loop per instruction, proven). mov
 
 * **Whole checkpoints** (`scripts/replay-sample.py --checkpoint A-B`): every user transaction
   of 20 consecutive mainnet checkpoints (344,393,000–019, ~5 s of Sui, 572 transactions):
-  **529 byte-identical, 0 differences**; the rest stopped cleanly — 36 failed arbitrage
-  transactions whose input coin the GraphQL endpoint has no record of (apparently
-  address-balance-backed), and a few missing natives since added. Checkpoints from a month ago:
-  42/42. From May 2025: 60/61 after adding the older framework's `type_name::get`; the other
-  needs a BLS12-381 signature check.
+  **571 byte-identical, 0 differences**; the remaining one needs a BLS12-381 signature check
+  (not implemented, stops cleanly). ~510k cycles per transaction on average, 2 min 48 s for all
+  572 (8 in parallel). Checkpoints from a month ago: 42/42. From May 2025: 60/61 (BLS again).
 * **199 of 200** random recent mainnet transactions replayed byte-identically on the first run
   of the final sampler (`scripts/replay-sample.py 200`, 66 s with 8 in parallel; the one
   failure, a type added in a later package version, is fixed). Earlier samples found and fixed:
@@ -130,6 +128,11 @@ data certified by Sui validators, but they bound what a proof means:
 * **Not supported** (clean error): `Publish`/`Upgrade` commands, system transactions,
   `Receiving` inputs, the unimplemented natives above, objects the GraphQL endpoint no longer
   serves (old history).
+* **Coin reservations** (an input that is not an object but `amount` reserved from the
+  sender's address balance, encoded in the object reference: ID = the balance's accumulator ID
+  XOR the chain identifier, "digest" = amount ‖ epoch ‖ `0xac…`) are decoded from that
+  encoding — reverse-engineered from mainnet data, not from a spec — and become a fresh coin
+  (as Sui's gas reservations do); what is left of it returns to the balance.
 * **ed25519** follows `ed25519-dalek` semantics; Sui uses ZIP-215 rules. They agree on all
   honestly generated signatures and may differ on adversarial edge cases.
 * **`--fast`** (opt-in, off by default): SHA-256 (an SP1 precompile) instead of Blake2b for
